@@ -78,6 +78,9 @@ This run proves provider selection, lifecycle completion, zero-copy adapter
 submission, and one real-model output path. It does not prove bitwise numerical
 equivalence or a performance advantage.
 
+See [the machine-readable H20 record](./h20-smoke-20260811.json) for source
+hashes, raw selected-token log-probabilities, and command outcomes.
+
 Only decode attention uses Loom. Prefill and KV cache writes keep their existing
 Mistral.rs implementations.
 

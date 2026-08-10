@@ -1,0 +1,176 @@
+{
+  "schema": "mistralrs.loom-paged-decode-smoke.v1",
+  "date": "2026-08-11",
+  "scope": "isolated single-GPU single-ordinary-stream happy-path POC",
+  "source": {
+    "mistral_rs_base_commit": "8010b6a0578e416120b590ed72fd46ed5f24ee85",
+    "mistral_rs_result_commit": "9f6acf2ac3fd65cf04d9044a3c91939c8fa5d793",
+    "run_worktree_dirty": true,
+    "runtime_sources_match_result_commit": true,
+    "adapter_sha256": "c7970754b86da29b588cb31a4a6b959053dbbee5016addde2e55355b7c2e408b",
+    "validation_binary_sha256": "4bb869c2f85e8584397bb9ab0fd99b28b9fe897441ce2aa88766c92988400e3d",
+    "loom_infer_commit": "d27b6e5825755a811cc413be3fa05109cf10abd8",
+    "cuda_oxide_commit": "868f8ec4ef900bae7e67e7f9508b2da66eee5472",
+    "cargo_oxide_version": "0.2.1"
+  },
+  "hardware": {
+    "gpu": "NVIDIA H20",
+    "compute_capability": "9.0",
+    "driver": "535.161.08",
+    "cuda_toolkit": "13.1",
+    "rustc": "1.96.0-nightly (55e86c996 2026-04-02)"
+  },
+  "execution_environment": {
+    "host_alias": "forge1",
+    "working_directory": "/workspace/mistral-loom-adapter.7cSCXf/mistral.rs",
+    "cargo_home": "/workspace/mistral-loom-adapter.7cSCXf/cargo-home",
+    "cargo_net_offline": true,
+    "hf_hub_offline": true,
+    "libclang_path": "/usr/lib/llvm-21/lib",
+    "cutlass_path": "/workspace/.cache/loom-infer/flashinfer-baseline/lib/python3.11/site-packages/flashinfer/data/cutlass",
+    "cuda_oxide_backend": "/workspace/.trash/loom-current-h20.FuIau3-20260810-final/backend-target/release/librustc_codegen_cuda.so"
+  },
+  "model": {
+    "name": "Qwen2.5-1.5B-Instruct",
+    "weights_sha256": "dd924a11b4c220f385b51ffa522daea7c9f3d850e31b162bb5661df483c6d3ee",
+    "config_sha256": "98d2ff8cc47488d08a2b0b3acf4eb99ef210779b42bd48605f6b8e36acdbf670",
+    "tokenizer_sha256": "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539",
+    "dtype": "BF16",
+    "layers": 28,
+    "query_heads": 12,
+    "kv_heads": 2,
+    "gqa_group_size": 6,
+    "head_dim": 128,
+    "page_size": 16,
+    "loom_kv_layout": "HND"
+  },
+  "request": {
+    "prompt": "Reply with one short sentence that explains what a CUDA kernel does.",
+    "temperature": 0.0,
+    "max_output_tokens": 8,
+    "top_logprobs": 5
+  },
+  "loom": {
+    "exit_code": 0,
+    "decoded_text": "A CUDA kernel is a lightweight, parallel",
+    "prompt_tokens": 42,
+    "completion_tokens": 8,
+    "selected_token_strings": [
+      "A",
+      " CUDA",
+      " kernel",
+      " is",
+      " a",
+      " lightweight",
+      ",",
+      " parallel"
+    ],
+    "selected_token_logprobs": [
+      -0.005035361,
+      -0.00013280797,
+      -0.0002339756,
+      -0.07974281,
+      -0.015938262,
+      -1.8937272,
+      -0.78480595,
+      -0.8663772
+    ],
+    "provider_stats": {
+      "submitted_operator_calls": 196,
+      "completed_operator_calls": 196,
+      "failed_operator_calls": 0,
+      "last_operator": "Bf16PagedBatchDecode",
+      "last_layout": "Hnd",
+      "last_algorithm": "PagedBatchDecodeTokenParallel8",
+      "adapter_zero_copy": true,
+      "last_external_region_count": 9,
+      "adapter_device_to_device_copies": 0
+    }
+  },
+  "baseline": {
+    "provider": "Mistral.rs standard paged attention",
+    "exit_code": 0,
+    "decoded_text": "A CUDA kernel is a lightweight, parallel",
+    "prompt_tokens": 42,
+    "completion_tokens": 8,
+    "selected_token_strings": [
+      "A",
+      " CUDA",
+      " kernel",
+      " is",
+      " a",
+      " lightweight",
+      ",",
+      " parallel"
+    ],
+    "selected_token_logprobs": [
+      -0.005035361,
+      -0.00013185416,
+      -0.0002339756,
+      -0.07145772,
+      -0.01590235,
+      -1.8274722,
+      -0.8364907,
+      -0.8359658
+    ]
+  },
+  "comparison": {
+    "decoded_text_equal": true,
+    "selected_token_strings_equal": true,
+    "selected_token_ids_recorded": false,
+    "selected_token_logprob_abs_diff": [
+      0.0,
+      0.00000095381,
+      0.0,
+      0.00828509,
+      0.000035912,
+      0.066255,
+      0.05168475,
+      0.0304114
+    ],
+    "selected_token_logprob_max_abs_diff": 0.066255,
+    "selected_token_logprob_mean_abs_diff": 0.01958413822625
+  },
+  "checks": [
+    {
+      "name": "CUDA binary check",
+      "command": "cargo +nightly-2026-04-03 check -p mistralrs --bin loom_paged_attn --features loom-infer",
+      "exit_code": 0
+    },
+    {
+      "name": "CUDA binary clippy",
+      "command": "cargo +nightly-2026-04-03 clippy -p mistralrs --bin loom_paged_attn --features loom-infer -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "name": "Loom real-model smoke",
+      "command": "MISTRALRS_LOOM_INFER=1 MISTRALRS_CUDA_GRAPHS=0 LOOM_MODEL_PATH=/workspace/models/qwen2.5-1.5b-instruct cargo +nightly-2026-04-03 oxide run --bin loom_paged_attn --features loom-infer --arch sm_90",
+      "exit_code": 0
+    },
+    {
+      "name": "Mistral.rs baseline smoke",
+      "command": "MISTRALRS_LOOM_INFER=0 LOOM_BASELINE=1 MISTRALRS_CUDA_GRAPHS=0 LOOM_MODEL_PATH=/workspace/models/qwen2.5-1.5b-instruct cargo +nightly-2026-04-03 oxide run --bin loom_paged_attn --features loom-infer --arch sm_90",
+      "exit_code": 0
+    }
+  ],
+  "not_qualified": [
+    "performance",
+    "bitwise numerical equivalence",
+    "full-model zero-copy execution",
+    "CUDA Graph execution",
+    "speculative decode",
+    "tensor parallelism",
+    "multiple GPUs",
+    "multiple CUDA streams",
+    "multiple concurrent models",
+    "general batching",
+    "adapter invalid-metadata FIFO recovery"
+  ],
+  "tooling_limitations": [
+    {
+      "command": "cargo +nightly-2026-04-03 oxide test --arch sm_90 -- --package mistralrs-core loom_decode_accepts_only_the_admitted_contract --features loom-infer --lib",
+      "exit_code": 101,
+      "reason": "cuda-oxide collected std::f32::powf as device code while compiling the full test target"
+    }
+  ]
+}
