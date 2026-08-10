@@ -175,6 +175,7 @@ pub mod text_models_inputs_processor {
     #[derive(Clone, Debug)]
     #[allow(dead_code)]
     pub struct PagedAttentionInputMetadata {
+        pub attention_backend: AttentionBackendKind,
         /// Block tables, windowed when a global sliding_window is set.
         pub block_tables: Option<HashMap<DeviceLocation, Tensor>>,
         /// Context lens, capped by sliding_window when set.
@@ -222,6 +223,7 @@ pub mod text_models_inputs_processor {
         /// This is used for the case of imatrix generation.
         pub fn dummy(dev: &Device) -> candle_core::Result<Self> {
             Ok(PagedAttentionInputMetadata {
+                attention_backend: AttentionBackendKind::Standard,
                 block_tables: None,
                 context_lens: None,
                 block_size: None,
@@ -458,6 +460,7 @@ pub mod text_models_inputs_processor {
                 });
 
             Ok(PagedAttentionInputMetadata {
+                attention_backend: self.attention_backend,
                 block_tables: self.block_tables.clone(),
                 context_lens: Some(context_lens_map),
                 block_size: self.block_size,
@@ -1258,6 +1261,7 @@ pub mod text_models_inputs_processor {
             ));
 
             Some(PagedAttentionInputMetadata {
+                attention_backend: paged_attn_metadata.attention_backend,
                 slot_mappings: slot_mappings_map,
                 block_tables: Some(block_tables_map),
                 context_lens: Some(context_lens_map),
@@ -1783,6 +1787,7 @@ pub mod text_models_inputs_processor {
             ));
 
             Some(PagedAttentionInputMetadata {
+                attention_backend: paged_attn_input.attention_backend,
                 slot_mappings: slot_mappings_map,
                 block_tables: (use_standard_metadata || decode_window > 1)
                     .then_some(block_tables_map),

@@ -1414,7 +1414,9 @@ impl ModelConfigLike for Gemma4ModelConfigLike {
 
     fn kv_cache_layout_for_layer(&self, layer_idx: usize) -> KvCacheLayout {
         match self.attention_backend_kind_for_layer(layer_idx) {
-            AttentionBackendKind::FlashInfer => KvCacheLayout::FlashInferHnd,
+            AttentionBackendKind::FlashInfer | AttentionBackendKind::Loom => {
+                KvCacheLayout::FlashInferHnd
+            }
             AttentionBackendKind::Standard => KvCacheLayout::Standard,
         }
     }

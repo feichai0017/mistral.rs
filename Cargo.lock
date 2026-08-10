@@ -185,7 +185,7 @@ version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7eb93bbb63b9c227414f6eb3a0adfddca591a8ce1e9b60661bb08969b87e340b"
 dependencies = [
- "object",
+ "object 0.37.3",
 ]
 
 [[package]]
@@ -389,7 +389,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "miniz_oxide",
- "object",
+ "object 0.37.3",
  "rustc-demangle",
  "windows-link 0.2.1",
 ]
@@ -446,6 +446,26 @@ dependencies = [
  "shlex",
  "syn 2.0.114",
  "which 4.4.2",
+]
+
+[[package]]
+name = "bindgen"
+version = "0.71.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f58bf3d7db68cfbac37cfc485a8d711e87e064c3d0fe0435b92f7a407f9d6b3"
+dependencies = [
+ "bitflags 2.10.0",
+ "cexpr",
+ "clang-sys",
+ "itertools 0.12.1",
+ "log",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash 2.1.1",
+ "shlex",
+ "syn 2.0.114",
 ]
 
 [[package]]
@@ -1208,16 +1228,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "cuda-artifact-finalizer"
+version = "0.2.1"
+source = "git+https://github.com/NVlabs/cuda-oxide.git?rev=868f8ec4ef900bae7e67e7f9508b2da66eee5472#868f8ec4ef900bae7e67e7f9508b2da66eee5472"
+dependencies = [
+ "libnvvm-sys",
+ "nvjitlink-sys",
+ "sha2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "cuda-async"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e5e6c51933b111a9ce229ec0a132ed01f6dc1905689619546f92e3579d067b6"
 dependencies = [
  "anyhow",
- "cuda-core",
+ "cuda-core 0.1.0",
  "futures",
  "half",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "cuda-async"
+version = "0.2.1"
+source = "git+https://github.com/NVlabs/cuda-oxide.git?rev=868f8ec4ef900bae7e67e7f9508b2da66eee5472#868f8ec4ef900bae7e67e7f9508b2da66eee5472"
+dependencies = [
+ "anyhow",
+ "cuda-bindings 0.2.1",
+ "cuda-core 0.2.1",
+ "futures",
+ "rustc-hash 2.1.1",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1226,12 +1270,20 @@ version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bb536c6bd521e35942cf374515151457be1e09de2eb7d4627d4e7d7af70e618c"
 dependencies = [
- "bindgen",
+ "bindgen 0.69.5",
  "libloading 0.8.9",
  "prettyplease",
  "proc-macro2",
  "quote",
  "syn 2.0.114",
+]
+
+[[package]]
+name = "cuda-bindings"
+version = "0.2.1"
+source = "git+https://github.com/NVlabs/cuda-oxide.git?rev=868f8ec4ef900bae7e67e7f9508b2da66eee5472#868f8ec4ef900bae7e67e7f9508b2da66eee5472"
+dependencies = [
+ "bindgen 0.71.1",
 ]
 
 [[package]]
@@ -1241,8 +1293,53 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "21a377120db77d05b039ff595298e9c542aaafa751de8cfe89a29bf8d0989e6f"
 dependencies = [
  "anyhow",
- "cuda-bindings",
+ "cuda-bindings 0.1.0",
  "half",
+]
+
+[[package]]
+name = "cuda-core"
+version = "0.2.1"
+source = "git+https://github.com/NVlabs/cuda-oxide.git?rev=868f8ec4ef900bae7e67e7f9508b2da66eee5472#868f8ec4ef900bae7e67e7f9508b2da66eee5472"
+dependencies = [
+ "anyhow",
+ "cuda-bindings 0.2.1",
+ "cuda-macros",
+ "half",
+ "oxide-artifacts",
+]
+
+[[package]]
+name = "cuda-device"
+version = "0.2.1"
+source = "git+https://github.com/NVlabs/cuda-oxide.git?rev=868f8ec4ef900bae7e67e7f9508b2da66eee5472#868f8ec4ef900bae7e67e7f9508b2da66eee5472"
+dependencies = [
+ "cuda-macros",
+]
+
+[[package]]
+name = "cuda-host"
+version = "0.2.1"
+source = "git+https://github.com/NVlabs/cuda-oxide.git?rev=868f8ec4ef900bae7e67e7f9508b2da66eee5472#868f8ec4ef900bae7e67e7f9508b2da66eee5472"
+dependencies = [
+ "cuda-artifact-finalizer",
+ "cuda-async 0.2.1",
+ "cuda-core 0.2.1",
+ "cuda-macros",
+ "half",
+ "sha2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "cuda-macros"
+version = "0.2.1"
+source = "git+https://github.com/NVlabs/cuda-oxide.git?rev=868f8ec4ef900bae7e67e7f9508b2da66eee5472#868f8ec4ef900bae7e67e7f9508b2da66eee5472"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "reserved-oxide-symbols",
+ "syn 2.0.114",
 ]
 
 [[package]]
@@ -1292,8 +1389,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "428ac421e843d7532b8213d17647f1bfed4ce641d9d4b234b493c63ef3aeca8c"
 dependencies = [
  "anyhow",
- "cuda-async",
- "cuda-core",
+ "cuda-async 0.1.0",
+ "cuda-core 0.1.0",
  "cutile-compiler",
  "cutile-ir",
  "cutile-macro",
@@ -1312,8 +1409,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57ffebc1613d8a1c68521f3a324bfe5e4e3d1ce4915d609b8a7321faa0315f44"
 dependencies = [
  "anyhow",
- "cuda-async",
- "cuda-core",
+ "cuda-async 0.1.0",
+ "cuda-core 0.1.0",
  "cutile-ir",
  "half",
  "linkme",
@@ -3298,6 +3395,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "libnvvm-sys"
+version = "0.2.1"
+source = "git+https://github.com/NVlabs/cuda-oxide.git?rev=868f8ec4ef900bae7e67e7f9508b2da66eee5472#868f8ec4ef900bae7e67e7f9508b2da66eee5472"
+dependencies = [
+ "libloading 0.8.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "libredox"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3393,6 +3499,26 @@ dependencies = [
  "scoped-tls",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "loom-infer"
+version = "1.0.0-alpha.1"
+dependencies = [
+ "half",
+]
+
+[[package]]
+name = "loom-infer-cuda"
+version = "1.0.0-alpha.1"
+dependencies = [
+ "cuda-core 0.2.1",
+ "cuda-device",
+ "cuda-host",
+ "cudarc 0.19.8",
+ "half",
+ "loom-infer",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3947,10 +4073,13 @@ dependencies = [
  "anyhow",
  "candle-core",
  "candle-metal-kernels",
+ "cuda-core 0.2.1",
  "cudaforge",
  "dispatch2",
  "float8",
  "half",
+ "loom-infer",
+ "loom-infer-cuda",
  "mistralrs-metal-compile",
  "objc2-foundation",
  "objc2-metal",
@@ -3991,9 +4120,9 @@ dependencies = [
  "candle-core",
  "candle-metal-kernels",
  "candle-nn",
- "cuda-async",
- "cuda-bindings",
- "cuda-core",
+ "cuda-async 0.1.0",
+ "cuda-bindings 0.1.0",
+ "cuda-core 0.1.0",
  "cudaforge",
  "cutile",
  "cutile-compiler",
@@ -4360,6 +4489,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
 
 [[package]]
+name = "nvjitlink-sys"
+version = "0.2.1"
+source = "git+https://github.com/NVlabs/cuda-oxide.git?rev=868f8ec4ef900bae7e67e7f9508b2da66eee5472#868f8ec4ef900bae7e67e7f9508b2da66eee5472"
+dependencies = [
+ "libloading 0.8.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "objc"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4429,6 +4567,18 @@ dependencies = [
  "objc2",
  "objc2-core-foundation",
  "objc2-foundation",
+]
+
+[[package]]
+name = "object"
+version = "0.36.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62948e14d923ea95ea2c7c86c71013138b66525b86bdc08d2dcc262bdb497b87"
+dependencies = [
+ "crc32fast",
+ "hashbrown 0.15.5",
+ "indexmap 2.13.0",
+ "memchr",
 ]
 
 [[package]]
@@ -4559,6 +4709,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f4779c6901a562440c3786d08192c6fbda7c1c2060edd10006b05ee35d10f2d"
 dependencies = [
  "num-traits",
+]
+
+[[package]]
+name = "oxide-artifacts"
+version = "0.2.1"
+source = "git+https://github.com/NVlabs/cuda-oxide.git?rev=868f8ec4ef900bae7e67e7f9508b2da66eee5472#868f8ec4ef900bae7e67e7f9508b2da66eee5472"
+dependencies = [
+ "object 0.36.7",
 ]
 
 [[package]]
@@ -5509,6 +5667,11 @@ dependencies = [
  "wasm-streams",
  "web-sys",
 ]
+
+[[package]]
+name = "reserved-oxide-symbols"
+version = "0.2.1"
+source = "git+https://github.com/NVlabs/cuda-oxide.git?rev=868f8ec4ef900bae7e67e7f9508b2da66eee5472#868f8ec4ef900bae7e67e7f9508b2da66eee5472"
 
 [[package]]
 name = "rgb"

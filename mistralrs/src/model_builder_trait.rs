@@ -426,7 +426,7 @@ pub(crate) async fn build_pipeline_from_text_loader(
         builder.prefix_cache_n,
     );
     let mcp_client_config = builder.mcp_client_config.clone();
-    let device = resolve_device(builder.force_cpu, None)?;
+    let device = resolve_device(builder.force_cpu, builder.device.clone())?;
     let isq_type = resolve_isq_type(builder.isq.as_ref(), &device)?;
     let device_map_setting =
         builder
@@ -593,7 +593,7 @@ pub async fn build_text_pipeline(
     )
     .build(builder.loader_type.clone())?;
 
-    let device = resolve_device(builder.force_cpu, None)?;
+    let device = resolve_device(builder.force_cpu, builder.device.clone())?;
     let isq_type = resolve_isq_type(builder.isq.as_ref(), &device)?;
 
     let pipeline = loader.load_model_from_hf(

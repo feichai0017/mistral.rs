@@ -255,6 +255,7 @@ impl<'a> SpeculativeCacheAccess for PagedSpeculativeCacheAccess<'a> {
             context_lens: vec![(0, verify_len)],
             position_ids: vec![base_len + verify_len],
             paged_attn_meta: Some(PagedAttentionInputMetadata {
+                attention_backend: self.metadata.attention_backend,
                 block_tables: Some(map_to_devices(&block_tables, device, mapper)?),
                 context_lens: Some(map_to_devices(&context_lens, device, mapper)?),
                 block_size: Some(self.metadata.block_size),

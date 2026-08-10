@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
 use candle_core::{DType, Device, DeviceLocation, Result, Tensor};
+#[cfg(all(feature = "loom-infer", target_family = "unix"))]
+use mistralrs_paged_attn::loom_paged_decode;
 #[cfg(all(feature = "cuda", target_family = "unix"))]
 use mistralrs_paged_attn::{
     flashinfer_decode, gather_kv_cache_flashinfer, reshape_and_cache_flashinfer,
@@ -19,12 +21,32 @@ use crate::{
     paged_attention::{
         block_aligned_sliding_window_start,
         plan::{DecodePlan, DecodePlanInput, PrefixPrefillPlan, PrefixPrefillPlanInput},
-        AttentionBackendKind, _PAD_SLOT_ID,
+        KvCacheLayout, _PAD_SLOT_ID,
     },
     pipeline::text_models_inputs_processor::{
         FlashKMeta, FlashParams, PagedAttentionInputMetadata,
     },
 };
+
+impl KvCacheLayout {
+    fn from_cache_layout(key_cache: &Tensor, value_cache: &Tensor) -> Result<Self> {
+        if key_cache.dims().len() == 4
+            && value_cache.dims().len() == 4
+            && key_cache.dims() == value_cache.dims()
+        {
+            return Ok(Self::FlashInferHnd);
+        }
+
+        if key_cache.dims().len() == 5 && value_cache.dims().len() == 4 {
+            return Ok(Self::Standard);
+        }
+        candle_core::bail!(
+            "unrecognized paged KV cache layout: key rank={}, value rank={}",
+            key_cache.dims().len(),
+            value_cache.dims().len()
+        )
+    }
+}
 
 fn resolve_tensor_for_device(
     tensors: &HashMap<candle_core::DeviceLocation, Tensor>,
@@ -60,22 +82,24 @@ fn block_aligned_window_len_for_query(
 }
 
 fn cache_block_size(key_cache: &Tensor, value_cache: &Tensor) -> Result<usize> {
-    match AttentionBackendKind::from_cache(key_cache, value_cache) {
-        AttentionBackendKind::FlashInfer => Ok(key_cache.dims4()?.2),
-        AttentionBackendKind::Standard => Ok(key_cache.dims5()?.3),
+    match KvCacheLayout::from_cache_layout(key_cache, value_cache)? {
+        KvCacheLayout::FlashInferHnd => Ok(key_cache.dims4()?.2),
+        KvCacheLayout::Standard | KvCacheLayout::StandardNoFlashInfer => Ok(key_cache.dims5()?.3),
+        KvCacheLayout::Mla { .. } => candle_core::bail!("MLA cache uses a separate decode path"),
     }
 }
 
 fn cache_kv_shape(key_cache: &Tensor, value_cache: &Tensor) -> Result<(usize, usize)> {
-    match AttentionBackendKind::from_cache(key_cache, value_cache) {
-        AttentionBackendKind::FlashInfer => {
+    match KvCacheLayout::from_cache_layout(key_cache, value_cache)? {
+        KvCacheLayout::FlashInferHnd => {
             let (_, num_kv_heads, _, head_size) = key_cache.dims4()?;
             Ok((num_kv_heads, head_size))
         }
-        AttentionBackendKind::Standard => {
+        KvCacheLayout::Standard | KvCacheLayout::StandardNoFlashInfer => {
             let (_, num_kv_heads, head_size_blocks, _, x) = key_cache.dims5()?;
             Ok((num_kv_heads, head_size_blocks * x))
         }
+        KvCacheLayout::Mla { .. } => candle_core::bail!("MLA cache uses a separate decode path"),
     }
 }
 
@@ -108,8 +132,8 @@ fn write_kv_cache(
         value_packed = value.contiguous()?;
         &value_packed
     };
-    match AttentionBackendKind::from_cache(key_cache, value_cache) {
-        AttentionBackendKind::FlashInfer => {
+    match KvCacheLayout::from_cache_layout(key_cache, value_cache)? {
+        KvCacheLayout::FlashInferHnd => {
             #[cfg(all(feature = "cuda", target_family = "unix"))]
             {
                 reshape_and_cache_flashinfer(key, value, key_cache, value_cache, slot_mapping)
@@ -119,7 +143,7 @@ fn write_kv_cache(
                 unreachable!("FlashInfer cache is only available with CUDA")
             }
         }
-        AttentionBackendKind::Standard => reshape_and_cache(
+        KvCacheLayout::Standard | KvCacheLayout::StandardNoFlashInfer => reshape_and_cache(
             key,
             value,
             k_scale,
@@ -128,6 +152,7 @@ fn write_kv_cache(
             value_cache,
             slot_mapping,
         ),
+        KvCacheLayout::Mla { .. } => candle_core::bail!("MLA cache uses a separate decode path"),
     }
 }
 
@@ -140,8 +165,8 @@ fn gather_kv_cache_for_layout(
     cu_kv: &Tensor,
     dtype: DType,
 ) -> Result<(Tensor, Tensor)> {
-    match AttentionBackendKind::from_cache(key_cache, value_cache) {
-        AttentionBackendKind::FlashInfer => {
+    match KvCacheLayout::from_cache_layout(key_cache, value_cache)? {
+        KvCacheLayout::FlashInferHnd => {
             #[cfg(all(feature = "cuda", target_family = "unix"))]
             {
                 gather_kv_cache_flashinfer(key_cache, value_cache, block_tables, cu_kv, dtype)
@@ -151,15 +176,18 @@ fn gather_kv_cache_for_layout(
                 unreachable!("FlashInfer cache is only available with CUDA")
             }
         }
-        AttentionBackendKind::Standard => mistralrs_paged_attn::gather_kv_cache(
-            key_cache,
-            value_cache,
-            k_scale,
-            v_scale,
-            block_tables,
-            cu_kv,
-            dtype,
-        ),
+        KvCacheLayout::Standard | KvCacheLayout::StandardNoFlashInfer => {
+            mistralrs_paged_attn::gather_kv_cache(
+                key_cache,
+                value_cache,
+                k_scale,
+                v_scale,
+                block_tables,
+                cu_kv,
+                dtype,
+            )
+        }
+        KvCacheLayout::Mla { .. } => candle_core::bail!("MLA cache uses a separate decode path"),
     }
 }
 
@@ -953,10 +981,6 @@ impl PagedAttention {
             mm_prefix_ranges.is_some(),
         );
         let causality_known = !tensors.attention_mask.is_custom() || ctx.flash_params.is_some();
-        let attention_backend = AttentionBackendKind::from_cache(
-            key_cache.as_ref().unwrap(),
-            value_cache.as_ref().unwrap(),
-        );
         let prefill_plan = PrefixPrefillPlan::choose(PrefixPrefillPlanInput {
             device_is_cuda: tensors.query.device().is_cuda(),
             dtype: tensors.query.dtype(),
@@ -968,7 +992,7 @@ impl PagedAttention {
             has_sliding_window: ctx.sdpa_params.sliding_window.is_some(),
             query_layout_is_dense,
             block_size,
-            attention_backend,
+            attention_backend: ctx.input_metadata.attention_backend,
         });
         match prefill_plan {
             #[cfg(all(feature = "cuda", feature = "flash-attn", target_family = "unix"))]
@@ -1369,23 +1393,21 @@ impl PagedAttention {
         let dev = query.device().location();
         let key_cache_ref = key_cache.as_ref().unwrap();
         let value_cache_ref = value_cache.as_ref().unwrap();
-        if tensors.attention_mask.is_custom() {
-            return self.run_decode_gather_sdpa(
-                ctx,
-                &query,
-                key_cache_ref,
-                value_cache_ref,
-                &dev,
-                tensors.attention_mask,
-            );
-        }
-        let attention_backend = AttentionBackendKind::from_cache(key_cache_ref, value_cache_ref);
+        let block_size = cache_block_size(key_cache_ref, value_cache_ref)?;
         match DecodePlan::choose(DecodePlanInput {
-            attention_backend,
+            attention_backend: ctx.input_metadata.attention_backend,
+            dtype: query.dtype(),
+            query_len: ctx.dims.seq_len,
+            query_heads: ctx.dims.attention_heads,
+            kv_heads: ctx.dims.key_value_heads,
             head_size: ctx.dims.head_size,
+            block_size,
+            softmax_scale: ctx.sdpa_params.softmax_scale,
             has_alibi: ctx.alibi_slopes.is_some(),
             has_sinks: ctx.sdpa_params.sinks.is_some(),
             has_sliding_window: ctx.sdpa_params.sliding_window.is_some(),
+            has_softcap: ctx.sdpa_params.softcap.is_some(),
+            has_custom_mask: tensors.attention_mask.is_custom(),
         })? {
             DecodePlan::GatherSdpa => self.run_decode_gather_sdpa(
                 ctx,
@@ -1401,6 +1423,9 @@ impl PagedAttention {
             }
             DecodePlan::PagedAttention => {
                 self.run_standard_paged_decode(ctx, &query, key_cache_ref, value_cache_ref, &dev)
+            }
+            DecodePlan::Loom => {
+                self.run_loom_decode(ctx, &query, key_cache_ref, value_cache_ref, &dev)
             }
         }
     }
@@ -1604,6 +1629,70 @@ impl PagedAttention {
             ctx.sdpa_params.softcap.unwrap_or(1.0f32),
             ctx.sdpa_params.sinks.as_ref(),
         )
+    }
+
+    fn run_loom_decode(
+        &self,
+        ctx: &PagedForwardCtx<'_>,
+        query: &Tensor,
+        key_cache: &Tensor,
+        value_cache: &Tensor,
+        dev: &DeviceLocation,
+    ) -> Result<Tensor> {
+        #[cfg(all(feature = "loom-infer", target_family = "unix"))]
+        {
+            let fi_meta = ctx
+                .input_metadata
+                .flashinfer
+                .as_ref()
+                .ok_or_else(|| candle_core::Error::msg("Loom paged KV metadata missing"))?
+                .decode_metadata(dev, None)?;
+            let context_lens = ctx.context_lens_cpu().ok_or_else(|| {
+                candle_core::Error::msg("Loom paged decode requires CPU context lengths")
+            })?;
+            if context_lens.len() != ctx.dims.batch_size {
+                candle_core::bail!(
+                    "Loom paged decode context length count mismatch: expected {}, got {}",
+                    ctx.dims.batch_size,
+                    context_lens.len()
+                );
+            }
+            let block_size = ctx
+                .input_metadata
+                .block_size
+                .ok_or_else(|| candle_core::Error::msg("Loom paged decode block size missing"))?;
+            if block_size != 16 {
+                candle_core::bail!(
+                    "Loom paged decode metadata requires block_size=16, got {block_size}"
+                );
+            }
+            let logical_page_count = context_lens.iter().try_fold(0usize, |total, &len| {
+                total.checked_add(len.div_ceil(block_size)).ok_or_else(|| {
+                    candle_core::Error::msg("Loom paged decode logical page count overflow")
+                })
+            })?;
+
+            // SAFETY: NormalPipeline serializes each step under exclusive
+            // pipeline/model-runner access. The admitted Loom mode is one GPU
+            // on one ordinary stream, and its Tensor/cache aliases are not
+            // used concurrently before the completion drain.
+            unsafe {
+                loom_paged_decode(
+                    query,
+                    key_cache,
+                    value_cache,
+                    fi_meta.paged_kv_indptr,
+                    fi_meta.paged_kv_indices,
+                    logical_page_count,
+                    fi_meta.paged_kv_last_page_len,
+                )
+            }
+        }
+        #[cfg(not(all(feature = "loom-infer", target_family = "unix")))]
+        {
+            let _ = (ctx, query, key_cache, value_cache, dev);
+            candle_core::bail!("Loom paged decode requires the loom-infer feature on CUDA Unix")
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -554,6 +554,7 @@ impl CudaDecodeGraphMetadataBuffers {
         block_size: usize,
     ) -> PagedAttentionInputMetadata {
         PagedAttentionInputMetadata {
+            attention_backend: metadata.attention_backend,
             block_tables: option_tensor_map_from_var_map(&self.block_tables),
             context_lens: option_tensor_map_from_var_map(&self.context_lens),
             block_size: metadata.block_size,
@@ -771,10 +772,12 @@ pub(crate) fn cuda_decode_graph_supported_for_model(
     #[cfg(target_family = "unix")]
     {
         (0..metadata.num_layers()).all(|layer_idx| {
-            !DecodePlan::requires_host_context_lengths(
-                metadata.attention_backend_kind_for_layer(layer_idx),
-                metadata.k_head_dim_for_layer(layer_idx),
-            )
+            let backend = metadata.attention_backend_kind_for_layer(layer_idx);
+            backend != AttentionBackendKind::Loom
+                && !DecodePlan::requires_host_context_lengths(
+                    backend,
+                    metadata.k_head_dim_for_layer(layer_idx),
+                )
         })
     }
     #[cfg(not(target_family = "unix"))]
@@ -782,7 +785,7 @@ pub(crate) fn cuda_decode_graph_supported_for_model(
         (0..metadata.num_layers()).all(|layer_idx| {
             !matches!(
                 metadata.attention_backend_kind_for_layer(layer_idx),
-                AttentionBackendKind::FlashInfer
+                AttentionBackendKind::FlashInfer | AttentionBackendKind::Loom
             )
         })
     }

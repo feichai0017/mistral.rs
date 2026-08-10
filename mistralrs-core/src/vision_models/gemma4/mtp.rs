@@ -1045,6 +1045,7 @@ fn make_mtp_decode_metadata(
     });
 
     Ok(PagedAttentionInputMetadata {
+        attention_backend: paged_meta.attention_backend,
         block_tables: Some(block_tables_map),
         context_lens: Some(context_lens_map),
         block_size: Some(paged_meta.block_size),

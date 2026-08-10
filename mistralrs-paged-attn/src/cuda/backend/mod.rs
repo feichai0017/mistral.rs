@@ -3,6 +3,8 @@ mod context_attention_mla;
 mod flash_attn_sinks;
 mod flashinfer;
 mod gather_kv;
+#[cfg(feature = "loom-infer")]
+mod loom;
 mod mla;
 mod paged_attention;
 mod scale_update;
@@ -18,6 +20,11 @@ pub use flashinfer::{
     reshape_and_cache_flashinfer, FlashInferDecodeScratch,
 };
 pub use gather_kv::gather_kv_cache;
+#[cfg(feature = "loom-infer")]
+pub use loom::{
+    drain_loom_paged_decode_completions, loom_paged_decode, loom_paged_decode_stats,
+    LoomPagedDecodeStats,
+};
 pub use mla::{concat_and_cache_mla, flashinfer_mla_decode, gather_mla_cache};
 pub use paged_attention::{paged_attention, reshape_and_cache};
 pub use scale_update::kv_scale_update;

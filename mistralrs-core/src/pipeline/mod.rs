@@ -1240,6 +1240,28 @@ pub trait Pipeline:
         return_raw_logits: bool,
     ) -> Result<ForwardInputsResult, candle_core::Error>;
 
+    fn forward_inputs_and_drain_loom(
+        &mut self,
+        inputs: Box<dyn Any>,
+        return_raw_logits: bool,
+    ) -> Result<ForwardInputsResult, candle_core::Error> {
+        let forward = self.forward_inputs(inputs, return_raw_logits);
+        #[cfg(all(feature = "loom-infer", target_family = "unix"))]
+        {
+            let drain = mistralrs_paged_attn::drain_loom_paged_decode_completions();
+            match (forward, drain) {
+                (Ok(output), Ok(_)) => Ok(output),
+                (Err(error), Ok(_)) => Err(error),
+                (Ok(_), Err(error)) => Err(error),
+                (Err(forward_error), Err(drain_error)) => Err(candle_core::Error::msg(format!(
+                    "model forward failed: {forward_error}; Loom completion drain failed: {drain_error}"
+                ))),
+            }
+        }
+        #[cfg(not(all(feature = "loom-infer", target_family = "unix")))]
+        forward
+    }
+
     fn attach_speculative(
         &mut self,
         _config: crate::speculative::SpeculativeConfig,
@@ -1378,7 +1400,7 @@ pub trait Pipeline:
                         && sampling::can_sample_batch_cuda(input_seqs);
                     let start = Instant::now();
                     let raw_logits = self
-                        .forward_inputs(inputs, return_raw_logits)?
+                        .forward_inputs_and_drain_loom(inputs, return_raw_logits)?
                         .into_cpu_for_batch(input_seqs.len(), preserve_causal_generation)?;
                     let end = Instant::now();
                     exec_duration += end.duration_since(start);
@@ -1815,7 +1837,7 @@ pub trait Pipeline:
                         }
                         let start = Instant::now();
                         let raw_logits = self
-                            .forward_inputs(inputs, return_raw_logits)?
+                            .forward_inputs_and_drain_loom(inputs, return_raw_logits)?
                             .into_cpu_for_batch(input_seqs.len(), preserve_causal_generation)?;
                         let end = Instant::now();
                         exec_duration += end.duration_since(start);

@@ -191,6 +191,11 @@ path = "examples/advanced/batching_embeddings/main.rs"
 name = "paged_attn"
 path = "examples/advanced/paged_attn/main.rs"
 
+[[bin]]
+name = "loom_paged_attn"
+path = "examples/advanced/loom_paged_attn/main.rs"
+required-features = ["loom-infer"]
+
 [[example]]
 name = "auto_device_map"
 path = "examples/advanced/auto_device_map/main.rs"
@@ -275,6 +280,7 @@ no-default-features = true
 [features]
 # NVIDIA CUDA GPU support
 cuda = ["mistralrs-core/cuda"]
+loom-infer = ["cuda", "mistralrs-core/loom-infer"]
 # cuDNN acceleration (requires cuda)
 cudnn = ["mistralrs-core/cudnn"]
 # Apple Metal GPU support (macOS/iOS)

@@ -3,6 +3,8 @@ const CUTLASS_COMMIT: &str = "7127592069c2fe01b041e174ba4345ef9b279671";
 #[cfg(feature = "cuda")]
 const CUTLASS_COMMIT_ENV: &str = "MISTRALRS_CUTLASS_COMMIT";
 #[cfg(feature = "cuda")]
+const CUTLASS_PATH_ENV: &str = "MISTRALRS_CUTLASS_PATH";
+#[cfg(feature = "cuda")]
 const SUPPORTED_CUDA_TOOLKIT_VERSIONS: &[(usize, usize)] = &[
     (13, 3),
     (13, 2),
@@ -97,6 +99,7 @@ fn main() -> Result<(), String> {
         println!("cargo:rerun-if-changed=build.rs");
         println!("cargo:rerun-if-env-changed=CUDA_NVCC_FLAGS");
         println!("cargo:rerun-if-env-changed={CUTLASS_COMMIT_ENV}");
+        println!("cargo:rerun-if-env-changed={CUTLASS_PATH_ENV}");
         let build_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
 
         let header_files = cuda_headers::find(Path::new("kernels")).map_err(|e| e.to_string())?;
@@ -168,9 +171,21 @@ fn main() -> Result<(), String> {
             excluded_files.push("grouped_mm_*.cu");
         }
         builder = builder.exclude(&excluded_files);
-        let cutlass_commit =
-            std::env::var(CUTLASS_COMMIT_ENV).unwrap_or_else(|_| CUTLASS_COMMIT.to_string());
-        builder = builder.with_cutlass(Some(&cutlass_commit));
+        if let Ok(cutlass_path) = std::env::var(CUTLASS_PATH_ENV) {
+            let cutlass_path = PathBuf::from(cutlass_path);
+            let include = cutlass_path.join("include");
+            let tools_include = cutlass_path.join("tools/util/include");
+            if !include.is_dir() || !tools_include.is_dir() {
+                return Err(format!(
+                    "{CUTLASS_PATH_ENV} must contain include and tools/util/include"
+                ));
+            }
+            builder = builder.include_path(include).include_path(tools_include);
+        } else {
+            let cutlass_commit =
+                std::env::var(CUTLASS_COMMIT_ENV).unwrap_or_else(|_| CUTLASS_COMMIT.to_string());
+            builder = builder.with_cutlass(Some(&cutlass_commit));
+        }
 
         // https://github.com/EricLBuehler/mistral.rs/issues/286
         if let Some(cuda_nvcc_flags_env) = CUDA_NVCC_FLAGS {

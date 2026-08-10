@@ -191,6 +191,9 @@ cutile-ir = "=0.1.0"
 cuda-core = "=0.1.0"
 cuda-async = "=0.1.0"
 cuda-bindings = "=0.1.0"
+loom-cuda-core = { package = "cuda-core", git = "https://github.com/NVlabs/cuda-oxide.git", rev = "868f8ec4ef900bae7e67e7f9508b2da66eee5472" }
+loom-infer = { path = "../loom-infer/crates/loom-infer" }
+loom-infer-cuda = { path = "../loom-infer/crates/loom-infer-cuda", default-features = false }
 
 mistralrs-core = { path = "mistralrs-core", version = "0.9.0" }
 mistralrs-paged-attn = { path = "mistralrs-paged-attn", version = "0.9.0" }

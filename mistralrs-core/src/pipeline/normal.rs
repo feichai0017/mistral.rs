@@ -391,7 +391,9 @@ impl Loader for NormalLoader {
         #[cfg(feature = "cuda")]
         for device in &available_devices {
             if let Device::Cuda(dev) = device {
-                unsafe { dev.disable_event_tracking() };
+                if !crate::perf_flags::loom_infer_enabled() {
+                    unsafe { dev.disable_event_tracking() };
+                }
             }
         }
         let device = if use_distributed {

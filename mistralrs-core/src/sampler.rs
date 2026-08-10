@@ -495,8 +495,8 @@ impl Sampler {
                         return None;
                     }
                     CudaBatchSamplingKind::TopK { k }
-                } else if !(self.top_p > 0.0 && self.top_p < 1.0)
-                    && !(self.min_p > 0.0 && self.min_p < 1.0)
+                } else if !(self.top_p > 0.0 && self.top_p < 1.0
+                    || self.min_p > 0.0 && self.min_p < 1.0)
                 {
                     CudaBatchSamplingKind::Categorical
                 } else {

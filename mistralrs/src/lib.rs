@@ -355,6 +355,8 @@ pub use mistralrs_core::{IntervalLogger, MistralRs, RequestMessage, ResponseOk};
 
 // ========== Utilities ==========
 pub use mistralrs_core::{initialize_logging, paged_attn_supported, parse_isq_value};
+#[cfg(all(feature = "loom-infer", target_family = "unix"))]
+pub use mistralrs_core::{loom_paged_decode_stats, LoomPagedDecodeStats};
 
 // ========== llguidance ==========
 pub use mistralrs_core::llguidance;

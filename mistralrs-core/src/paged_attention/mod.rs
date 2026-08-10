@@ -25,6 +25,8 @@ use candle_core::{DType, Device};
 pub use config::{KvCacheLayout, KvCacheTopology, ModelConfigLike, ModelConfigMetadata};
 pub use kv_cache_manager::KVCacheManager;
 pub use layers::PagedAttention;
+#[cfg(all(feature = "loom-infer", target_family = "unix"))]
+pub use mistralrs_paged_attn::{loom_paged_decode_stats, LoomPagedDecodeStats};
 pub use scheduler::{
     PagedAttentionScheduler, PagedAttentionSchedulerConfig, PagedAttentionSchedulerOutput,
 };
