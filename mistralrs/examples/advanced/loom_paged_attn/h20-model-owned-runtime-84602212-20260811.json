@@ -1,0 +1,279 @@
+{
+  "schema": "mistralrs.loom-model-owned-runtime.v1",
+  "date": "2026-08-11",
+  "scope": "single-H20 model-owned runtime requalification for one ordinary CUDA stream",
+  "source": {
+    "mistral_rs_base_commit": "8010b6a0578e416120b590ed72fd46ed5f24ee85",
+    "model_owned_refactor_commit": "b4e4a1c8fe3150ebac8cc1410ffae5f84caceb19",
+    "mistral_rs_run_commit": "846022129a43550bb5383b2d2faa33ac380dc4ca",
+    "mistral_rs_run_tree": "6b3b83f8e5ef7be3e331623eaff941fd12bf3dab",
+    "run_source_matches_commit": true,
+    "run_worktree_dirty": null,
+    "run_snapshot_has_git_metadata": false,
+    "changed_file_count": 67,
+    "changed_file_manifest_sha256": "891666ea9418218110ebdb06c4c48191ca92baf0017ec58fbe5dee751e3260a1",
+    "loom_infer_commit": "d27b6e5825755a811cc413be3fa05109cf10abd8",
+    "cuda_oxide_commit": "868f8ec4ef900bae7e67e7f9508b2da66eee5472",
+    "cargo_oxide_version": "0.2.1",
+    "cutlass_commit": "7127592069c2fe01b041e174ba4345ef9b279671",
+    "validation_binary_sha256": "bbba54b2da71b5ccc1bbb4ee564f7b2850f823a5ce70b09c3083e7d6f3165912",
+    "sha256": {
+      "mistralrs-core/src/lib.rs": "eaba497fddc0fed8bf3b87e01837ce3f2097b829e3fe435063c08a7d5141f0ae",
+      "mistralrs-core/src/paged_attention/layers/paged_attention.rs": "bb2b6654fcdcaa0d312a78c6e3c76d08bb0e60883e0e0cf723ceece4432a619f",
+      "mistralrs-core/src/paged_attention/mod.rs": "222823514124eb6400af3ef50050240bfd7dc753025b6206b2013e9d2964e8e7",
+      "mistralrs-core/src/pipeline/normal.rs": "fe33d10d9c86dbe317379d9bbd4a10a99dc065c5a01d7295b080063dada5c38d",
+      "mistralrs-paged-attn/src/bin/loom_adapter_h20.rs": "a92e157a27db46ae6212669d2b014b81429a1f96306e235155b4568f2e146a41",
+      "mistralrs-paged-attn/src/cuda/backend/loom.rs": "f1c1f309fed0da528f345ee4914791ac46defb98c5ce6163ea487faf37c5dde1",
+      "mistralrs/examples/advanced/loom_paged_attn/main.rs": "cb40a5068ef2dc4269f5cad92bd92e3d94bf856aee9540190306a91e2e9e1f12",
+      "mistralrs/src/lib.rs": "e4448ba2abe1a3c7b882b030d729a63f2b5f034bada2da3e62af6013dbd18291",
+      "mistralrs/src/model.rs": "689709e7f6df8196962b0d15c0f97219d6cfe2e996eaa9a270743368baa2c528"
+    }
+  },
+  "historical_provenance": [
+    {
+      "record": "h20-smoke-20260811.json",
+      "run_source": "9f6acf2ac3fd65cf04d9044a3c91939c8fa5d793",
+      "recording_commit": "91787004c010afeb8e723fdd8752cb545f84d94d"
+    },
+    {
+      "record": "h20-adapter-recovery-20260811.json",
+      "run_source": "805dc8f1f5aa80c2d37460d18779290071889a88",
+      "recording_commit": "4f096d7ca4a4b87e1de07d903331f1aa744b3811"
+    }
+  ],
+  "hardware": {
+    "host": "g340-cd51-7804-db9d-6be9-5485-3305",
+    "gpu": "NVIDIA H20",
+    "compute_capability": "9.0",
+    "driver": "535.161.08",
+    "cuda_toolkit": "13.1",
+    "operating_system": "Debian 12",
+    "rustc": "1.96.0-nightly (55e86c996 2026-04-02)",
+    "cargo": "1.96.0-nightly (888f67534 2026-03-30)"
+  },
+  "execution_environment": {
+    "host_alias": "forge1",
+    "working_directory": "/workspace/mistral-loom-adapter.7cSCXf/mistral.rs",
+    "cargo_home": "/workspace/mistral-loom-adapter.7cSCXf/cargo-home",
+    "cutlass_path": "/workspace/mistral-loom-adapter.7cSCXf/cutlass-7127592069c2fe01",
+    "model_path": "/workspace/models/qwen2.5-1.5b-instruct",
+    "cuda_path_prefix": "/usr/local/cuda/bin"
+  },
+  "model": {
+    "name": "Qwen2.5-1.5B-Instruct",
+    "weights_sha256": "dd924a11b4c220f385b51ffa522daea7c9f3d850e31b162bb5661df483c6d3ee",
+    "config_sha256": "98d2ff8cc47488d08a2b0b3acf4eb99ef210779b42bd48605f6b8e36acdbf670",
+    "tokenizer_sha256": "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539",
+    "dtype": "BF16",
+    "layers": 28,
+    "query_heads": 12,
+    "kv_heads": 2,
+    "gqa_group_size": 6,
+    "head_dim": 128,
+    "page_size": 16,
+    "loom_kv_layout": "HND"
+  },
+  "request": {
+    "prompt": "Reply with one short sentence that explains what a CUDA kernel does.",
+    "temperature": 0.0,
+    "max_output_tokens": 8,
+    "top_logprobs": 5
+  },
+  "model_smoke": {
+    "loom": {
+      "exit_code": 0,
+      "decoded_text": "A CUDA kernel is a lightweight, parallel",
+      "prompt_tokens": 42,
+      "completion_tokens": 8,
+      "selected_token_strings": [
+        "A",
+        " CUDA",
+        " kernel",
+        " is",
+        " a",
+        " lightweight",
+        ",",
+        " parallel"
+      ],
+      "selected_token_logprobs": [
+        -0.005035361,
+        -0.00013280797,
+        -0.0002339756,
+        -0.07974281,
+        -0.015938262,
+        -1.8937272,
+        -0.78480595,
+        -0.8663772
+      ],
+      "provider_stats": {
+        "submitted_operator_calls": 196,
+        "completed_operator_calls": 196,
+        "failed_operator_calls": 0,
+        "last_operator": "Bf16PagedBatchDecode",
+        "last_layout": "HND",
+        "last_algorithm": "PagedBatchDecodeTokenParallel8",
+        "adapter_zero_copy": true,
+        "last_external_region_count": 9,
+        "adapter_device_to_device_copies": 0
+      },
+      "lifecycle_path": "NormalPipeline -> forward_inputs drain -> Model::loom_paged_decode_stats"
+    },
+    "baseline": {
+      "provider": "Mistral.rs standard paged attention",
+      "exit_code": 0,
+      "decoded_text": "A CUDA kernel is a lightweight, parallel",
+      "prompt_tokens": 42,
+      "completion_tokens": 8,
+      "selected_token_strings": [
+        "A",
+        " CUDA",
+        " kernel",
+        " is",
+        " a",
+        " lightweight",
+        ",",
+        " parallel"
+      ],
+      "selected_token_logprobs": [
+        -0.005035361,
+        -0.00013185416,
+        -0.0002339756,
+        -0.07145772,
+        -0.01590235,
+        -1.8274722,
+        -0.8364907,
+        -0.8359658
+      ]
+    },
+    "comparison": {
+      "decoded_text_equal": true,
+      "selected_token_strings_equal": true,
+      "selected_token_logprob_abs_diff": [
+        0.0,
+        0.00000095381,
+        0.0,
+        0.00828509,
+        0.000035912,
+        0.066255,
+        0.05168475,
+        0.0304114
+      ],
+      "selected_token_logprob_max_abs_diff": 0.06625499999999995,
+      "selected_token_logprob_mean_abs_diff": 0.01958413822625
+    }
+  },
+  "adapter_gate": {
+    "contract": {
+      "dtype": "BF16",
+      "batch_size": 2,
+      "max_num_pages": 4,
+      "query_heads": 12,
+      "kv_heads": 2,
+      "gqa_group_size": 6,
+      "head_dim": 128,
+      "page_size": 16,
+      "kv_layout": "HND"
+    },
+    "sequence": [
+      "valid",
+      "invalid_page_index",
+      "valid",
+      "valid",
+      "drain",
+      "valid_same_runtime",
+      "drain",
+      "two_valid_concurrent_drain"
+    ],
+    "result": {
+      "exit_code": 0,
+      "submitted_delta": 7,
+      "completed_delta": 7,
+      "failed_delta": 1,
+      "typed_error": {
+        "completion_failure_kind": "DeviceRejected",
+        "kind": "PageIndexOutOfRange",
+        "fifo_position": 2,
+        "index_position": 1,
+        "index": 4,
+        "max_num_pages": 4
+      },
+      "first_drain_settled": 4,
+      "reuse_drain_settled": 1,
+      "concurrent_drains": [
+        0,
+        2
+      ],
+      "final_drain_settled": 0,
+      "same_runtime_reuse": true,
+      "last_operator": "Bf16PagedBatchDecode",
+      "last_layout": "HND",
+      "last_algorithm": "PagedBatchDecodeTokenParallel8",
+      "adapter_zero_copy": true,
+      "external_regions": 9,
+      "adapter_device_to_device_copies": 0,
+      "valid_output_max_abs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  },
+  "checks": [
+    {
+      "name": "CUDA feature check",
+      "command": "PATH=/usr/local/cuda/bin:$PATH MISTRALRS_CUTLASS_PATH=/workspace/mistral-loom-adapter.7cSCXf/cutlass-7127592069c2fe01 CARGO_HOME=/workspace/mistral-loom-adapter.7cSCXf/cargo-home cargo +nightly-2026-04-03 check -p mistralrs --bin loom_paged_attn --features loom-infer",
+      "exit_code": 0,
+      "log_sha256": "5bf477cd7f8b87b84a35d0b4ba47914559cbeea652317b18148abd0b7fd97464"
+    },
+    {
+      "name": "CUDA feature Clippy",
+      "command": "PATH=/usr/local/cuda/bin:$PATH MISTRALRS_CUTLASS_PATH=/workspace/mistral-loom-adapter.7cSCXf/cutlass-7127592069c2fe01 CARGO_HOME=/workspace/mistral-loom-adapter.7cSCXf/cargo-home cargo +nightly-2026-04-03 clippy -p mistralrs --bin loom_paged_attn --features loom-infer -- -D warnings",
+      "exit_code": 0,
+      "log_sha256": "217bf241b4dd982aaecc94113b550b919efe48a342ae18e7a77854978808aeda"
+    },
+    {
+      "name": "H20 adapter gate",
+      "command": "cd mistralrs-paged-attn && cargo +nightly-2026-04-03 oxide run --bin loom_adapter_h20 --features loom-infer --arch sm_90",
+      "exit_code": 0,
+      "log_sha256": "04817900267ff15cf71972ea5626d8225ff437fff728d773dc779b9eba91f5b0"
+    },
+    {
+      "name": "Loom real-model smoke",
+      "command": "MISTRALRS_LOOM_INFER=1 MISTRALRS_CUDA_GRAPHS=0 LOOM_MODEL_PATH=/workspace/models/qwen2.5-1.5b-instruct target/release/loom_paged_attn",
+      "exit_code": 0,
+      "log_sha256": "54c7ba6b7fa2b183dea966f37fff011310e120ca53335a248eb59b077cc7aa06"
+    },
+    {
+      "name": "Mistral.rs baseline smoke",
+      "command": "LOOM_BASELINE=1 MISTRALRS_CUDA_GRAPHS=0 LOOM_MODEL_PATH=/workspace/models/qwen2.5-1.5b-instruct target/release/loom_paged_attn",
+      "exit_code": 0,
+      "log_sha256": "098654af1ae5e14f994e15f0a35dc9fb1bb188d8de53f9d37da45bfebb5de42b"
+    }
+  ],
+  "qualified_observations": [
+    "the model-owned runtime completed and drained 196 paged-decode operator calls on one H20 Qwen request",
+    "the Loom and standard providers selected the same eight token strings for the recorded request",
+    "the adapter bound nine external regions and issued no device-to-device copy for the paged-decode contract",
+    "one typed device metadata rejection was observed in FIFO order and the same runtime accepted another command",
+    "two concurrent drain callers settled one two-command FIFO without splitting it"
+  ],
+  "not_qualified": [
+    "performance or serving speedup",
+    "general production safety",
+    "bitwise numerical equivalence",
+    "full-model zero-copy execution",
+    "failed, panicking, or abandoned model-forward recovery",
+    "bridge, execution, and CUDA-context failure recovery",
+    "concurrent enqueue and drain",
+    "CUDA Graph execution",
+    "speculative decode",
+    "tensor parallelism",
+    "multiple GPUs",
+    "multiple CUDA streams",
+    "multiple concurrent models",
+    "general batching or model coverage"
+  ]
+}

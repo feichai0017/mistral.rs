@@ -63,7 +63,7 @@ cargo +nightly-2026-04-03 oxide run --bin loom_adapter_h20 \
   --features loom-infer --arch sm_90
 ```
 
-## H20 result
+## Historical H20 results
 
 The 2026-08-11 run used an NVIDIA H20, CUDA 13.1, cuda-oxide `868f8ec`, Loom
 `d27b6e5`, and the Mistral.rs base `8010b6a0`. The model smoke ran source
@@ -84,9 +84,9 @@ recorded both results.
 - The selected-token log-probability absolute difference had maximum
   `0.066255` and mean `0.0195841382`.
 
-This run proves provider selection, lifecycle completion, zero-copy adapter
-submission, and one real-model output path. It does not prove bitwise numerical
-equivalence or a performance advantage.
+This run proves provider selection, completion, zero-copy adapter submission,
+and one real-model output path for source `9f6acf2a`. It does not prove bitwise
+numerical equivalence or a performance advantage.
 
 See [the machine-readable H20 record](./h20-smoke-20260811.json) for source
 hashes, raw selected-token log-probabilities, and command outcomes.
@@ -107,17 +107,34 @@ source hashes and command output.
 Only decode attention uses Loom. Prefill and KV cache writes keep their existing
 Mistral.rs implementations.
 
-The current revision moves the runtime, completion FIFO, and provider counters
-from process-global state into `NormalPipeline`. Its `forward_inputs` path drains
-that model's completions after both successful and failed forwards. The
-historical records above do not qualify this lifecycle change.
+## Model-owned runtime requalification
+
+Commit `b4e4a1c8` moved the runtime, completion FIFO, and provider counters from
+process-global state into `NormalPipeline`. Commit `84602212` fixed the
+feature-only lifetime errors found by the first H20 build. The validated source
+manifest matched `84602212` and used Loom `d27b6e5`.
+
+The adapter gate completed seven commands. It returned one typed
+`PageIndexOutOfRange` rejection at FIFO position two, reused the same runtime,
+and serialized two concurrent drain callers over a two-command FIFO. All six
+valid outputs matched the CPU oracle.
+
+The Qwen model path completed 196 of 196 paged-decode operator calls with no
+provider error. Loom and the standard provider selected the same eight token
+strings and decoded text.
+
+The adapter recorded nine external regions and no
+adapter-issued device-to-device copy. This remains a statement about the
+paged-decode adapter boundary, not the full model.
+
+See the [model-owned runtime record](./h20-model-owned-runtime-84602212-20260811.json)
+for source hashes, commands, log hashes, model output, and excluded claims.
 
 ## Qualification gaps
 
 Before this provider becomes a general engine option:
 
 - Carry a typed, linear runner authority through the model forward path.
-- Qualify model-owned lifecycle and concurrent-drainer behavior on H20.
 - Define fail-closed behavior for a panic or abandoned model forward.
 - Model HND cache writes with explicit read-write storage guards.
 - Replace the sibling path dependency with an immutable published source.
