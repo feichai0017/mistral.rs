@@ -76,8 +76,8 @@ fn flashinfer_supported_for_model<M: ModelConfigLike + ?Sized>(config: &M) -> bo
 }
 
 fn select_attention_backend<M: ModelConfigLike + ?Sized>(config: &M) -> AttentionBackendKind {
-    if crate::perf_flags::loom_infer_enabled() {
-        return AttentionBackendKind::Loom;
+    if crate::perf_flags::oxide_infer_enabled() {
+        return AttentionBackendKind::Oxide;
     }
     let backend = FlashInferAttentionBackend;
     if flashinfer_supported_for_model(config) {
@@ -91,8 +91,8 @@ fn select_attention_backend_for_layer<M: ModelConfigLike + ?Sized>(
     config: &M,
     layer_idx: usize,
 ) -> AttentionBackendKind {
-    if crate::perf_flags::loom_infer_enabled() {
-        return AttentionBackendKind::Loom;
+    if crate::perf_flags::oxide_infer_enabled() {
+        return AttentionBackendKind::Oxide;
     }
     let backend = FlashInferAttentionBackend;
     if backend.supports_layer(config.attention_layer_spec(layer_idx)) {
@@ -111,7 +111,7 @@ fn select_kv_cache_layout<M: ModelConfigLike + ?Sized>(
         KvCacheLayout::StandardNoFlashInfer => KvCacheLayout::Standard,
         KvCacheLayout::FlashInferHnd | KvCacheLayout::Standard => {
             match config.attention_backend_kind() {
-                AttentionBackendKind::FlashInfer | AttentionBackendKind::Loom => {
+                AttentionBackendKind::FlashInfer | AttentionBackendKind::Oxide => {
                     KvCacheLayout::FlashInferHnd
                 }
                 AttentionBackendKind::Standard => KvCacheLayout::Standard,
@@ -130,7 +130,7 @@ fn select_kv_cache_layout_for_layer<M: ModelConfigLike + ?Sized>(
         KvCacheLayout::StandardNoFlashInfer => KvCacheLayout::Standard,
         KvCacheLayout::FlashInferHnd | KvCacheLayout::Standard => {
             match config.attention_backend_kind_for_layer(layer_idx) {
-                AttentionBackendKind::FlashInfer | AttentionBackendKind::Loom => {
+                AttentionBackendKind::FlashInfer | AttentionBackendKind::Oxide => {
                     KvCacheLayout::FlashInferHnd
                 }
                 AttentionBackendKind::Standard => KvCacheLayout::Standard,

@@ -89,7 +89,7 @@ impl FlashInferDecodePlan {
         match kind {
             AttentionBackendKind::FlashInfer => FLASHINFER_DECODE_MAX_HEAD_SIZE,
             AttentionBackendKind::Standard => STANDARD_PAGED_ATTENTION_MAX_HEAD_SIZE,
-            AttentionBackendKind::Loom => 128,
+            AttentionBackendKind::Oxide => 128,
         }
     }
 }

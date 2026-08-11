@@ -1423,8 +1423,8 @@ impl PagedAttention {
             DecodePlan::PagedAttention => {
                 self.run_standard_paged_decode(ctx, &query, key_cache_ref, value_cache_ref, &dev)
             }
-            DecodePlan::Loom => {
-                self.run_loom_decode(ctx, &query, key_cache_ref, value_cache_ref, &dev, runtime)
+            DecodePlan::Oxide => {
+                self.run_oxide_decode(ctx, &query, key_cache_ref, value_cache_ref, &dev, runtime)
             }
         }
     }
@@ -1630,7 +1630,7 @@ impl PagedAttention {
         )
     }
 
-    fn run_loom_decode(
+    fn run_oxide_decode(
         &self,
         ctx: &PagedForwardCtx<'_>,
         query: &Tensor,
@@ -1639,20 +1639,20 @@ impl PagedAttention {
         dev: &DeviceLocation,
         runtime: PagedAttentionRuntime<'_>,
     ) -> Result<Tensor> {
-        #[cfg(all(feature = "loom-infer", target_family = "unix"))]
+        #[cfg(all(feature = "oxide-infer", target_family = "unix"))]
         {
             let fi_meta = ctx
                 .input_metadata
                 .flashinfer
                 .as_ref()
-                .ok_or_else(|| candle_core::Error::msg("Loom paged KV metadata missing"))?
+                .ok_or_else(|| candle_core::Error::msg("Oxide paged KV metadata missing"))?
                 .decode_metadata(dev, None)?;
             let context_lens = ctx.context_lens_cpu().ok_or_else(|| {
-                candle_core::Error::msg("Loom paged decode requires CPU context lengths")
+                candle_core::Error::msg("Oxide paged decode requires CPU context lengths")
             })?;
             if context_lens.len() != ctx.dims.batch_size {
                 candle_core::bail!(
-                    "Loom paged decode context length count mismatch: expected {}, got {}",
+                    "Oxide paged decode context length count mismatch: expected {}, got {}",
                     ctx.dims.batch_size,
                     context_lens.len()
                 );
@@ -1660,21 +1660,21 @@ impl PagedAttention {
             let block_size = ctx
                 .input_metadata
                 .block_size
-                .ok_or_else(|| candle_core::Error::msg("Loom paged decode block size missing"))?;
+                .ok_or_else(|| candle_core::Error::msg("Oxide paged decode block size missing"))?;
             if block_size != 16 {
                 candle_core::bail!(
-                    "Loom paged decode metadata requires block_size=16, got {block_size}"
+                    "Oxide paged decode metadata requires block_size=16, got {block_size}"
                 );
             }
             let logical_page_count = context_lens.iter().try_fold(0usize, |total, &len| {
                 total.checked_add(len.div_ceil(block_size)).ok_or_else(|| {
-                    candle_core::Error::msg("Loom paged decode logical page count overflow")
+                    candle_core::Error::msg("Oxide paged decode logical page count overflow")
                 })
             })?;
 
-            let runtime = runtime.require_loom()?;
+            let runtime = runtime.require_oxide()?;
             // SAFETY: NormalPipeline serializes each step under exclusive
-            // pipeline/model-runner access. The admitted Loom mode is one GPU
+            // pipeline/model-runner access. The admitted Oxide mode is one GPU
             // on one ordinary stream, and its Tensor/cache aliases are not
             // used concurrently before the completion drain.
             unsafe {
@@ -1689,10 +1689,10 @@ impl PagedAttention {
                 )
             }
         }
-        #[cfg(not(all(feature = "loom-infer", target_family = "unix")))]
+        #[cfg(not(all(feature = "oxide-infer", target_family = "unix")))]
         {
             let _ = (ctx, query, key_cache, value_cache, dev, runtime);
-            candle_core::bail!("Loom paged decode requires the loom-infer feature on CUDA Unix")
+            candle_core::bail!("Oxide paged decode requires the oxide-infer feature on CUDA Unix")
         }
     }
 

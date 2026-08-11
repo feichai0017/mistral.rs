@@ -23,8 +23,10 @@ use crate::lora::Ordering;
 use crate::paged_attention::{
     calculate_cache_config, AttentionImplementation, CacheEngine, PagedAttentionRuntime,
 };
-#[cfg(all(feature = "loom-infer", target_family = "unix"))]
-use crate::paged_attention::{AttentionBackendKind, LoomPagedDecodeRuntime, LoomPagedDecodeStats};
+#[cfg(all(feature = "oxide-infer", target_family = "unix"))]
+use crate::paged_attention::{
+    AttentionBackendKind, OxidePagedDecodeRuntime, OxidePagedDecodeStats,
+};
 use crate::pipeline::chat_template::{calculate_eos_tokens, GenerationConfig};
 #[cfg(feature = "cuda")]
 use crate::pipeline::cuda_graph::{
@@ -82,8 +84,8 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, trace, warn};
 
 pub struct NormalPipeline {
-    #[cfg(all(feature = "loom-infer", target_family = "unix"))]
-    loom_decode: Option<LoomPagedDecodeRuntime>,
+    #[cfg(all(feature = "oxide-infer", target_family = "unix"))]
+    oxide_decode: Option<OxidePagedDecodeRuntime>,
     model: Box<dyn NormalModel + Send + Sync>,
     tokenizer: Arc<Tokenizer>,
     no_kv_cache: bool,
@@ -397,7 +399,7 @@ impl Loader for NormalLoader {
         #[cfg(feature = "cuda")]
         for device in &available_devices {
             if let Device::Cuda(dev) = device {
-                if !crate::perf_flags::loom_infer_enabled() {
+                if !crate::perf_flags::oxide_infer_enabled() {
                     unsafe { dev.disable_event_tracking() };
                 }
             }
@@ -931,21 +933,22 @@ impl Loader for NormalLoader {
             (None, None)
         };
 
-        #[cfg(all(feature = "loom-infer", target_family = "unix"))]
-        let loom_decode = if model_metadata.attention_backend_kind() == AttentionBackendKind::Loom {
+        #[cfg(all(feature = "oxide-infer", target_family = "unix"))]
+        let oxide_decode = if model_metadata.attention_backend_kind() == AttentionBackendKind::Oxide
+        {
             let cache_config = cache_config.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("Loom paged decode requires PagedAttention to be enabled")
+                anyhow::anyhow!("Oxide paged decode requires PagedAttention to be enabled")
             })?;
             if cache_config.block_size != 16 {
                 anyhow::bail!(
-                    "Loom paged decode requires block_size=16, got {}",
+                    "Oxide paged decode requires block_size=16, got {}",
                     cache_config.block_size
                 );
             }
             if dtype != DType::BF16 {
-                anyhow::bail!("Loom paged decode requires BF16 activation dtype, got {dtype:?}");
+                anyhow::bail!("Oxide paged decode requires BF16 activation dtype, got {dtype:?}");
             }
-            Some(LoomPagedDecodeRuntime::new())
+            Some(OxidePagedDecodeRuntime::new())
         } else {
             None
         };
@@ -973,8 +976,8 @@ impl Loader for NormalLoader {
             paths.get_weight_filenames().to_vec()
         };
         Ok(Arc::new(Mutex::new(NormalPipeline {
-            #[cfg(all(feature = "loom-infer", target_family = "unix"))]
-            loom_decode,
+            #[cfg(all(feature = "oxide-infer", target_family = "unix"))]
+            oxide_decode,
             model,
             tokenizer: tokenizer.into(),
             no_kv_cache: self.no_kv_cache,
@@ -1355,16 +1358,16 @@ impl NormalPipeline {
     }
 
     fn paged_attention_runtime(&self) -> PagedAttentionRuntime<'_> {
-        #[cfg(all(feature = "loom-infer", target_family = "unix"))]
-        if let Some(runtime) = self.loom_decode.as_ref() {
-            return PagedAttentionRuntime::Loom(runtime);
+        #[cfg(all(feature = "oxide-infer", target_family = "unix"))]
+        if let Some(runtime) = self.oxide_decode.as_ref() {
+            return PagedAttentionRuntime::Oxide(runtime);
         }
         PagedAttentionRuntime::native()
     }
 
-    fn finish_loom_forward<T>(&self, forward: candle_core::Result<T>) -> candle_core::Result<T> {
-        #[cfg(all(feature = "loom-infer", target_family = "unix"))]
-        if let Some(runtime) = self.loom_decode.as_ref() {
+    fn finish_oxide_forward<T>(&self, forward: candle_core::Result<T>) -> candle_core::Result<T> {
+        #[cfg(all(feature = "oxide-infer", target_family = "unix"))]
+        if let Some(runtime) = self.oxide_decode.as_ref() {
             let drain = runtime
                 .drain()
                 .map_err(|error| candle_core::Error::msg(error.to_string()));
@@ -1373,7 +1376,7 @@ impl NormalPipeline {
                 (Err(error), Ok(_)) => Err(error),
                 (Ok(_), Err(error)) => Err(error),
                 (Err(forward_error), Err(drain_error)) => Err(candle_core::Error::msg(format!(
-                    "model forward failed: {forward_error}; Loom completion drain failed: {drain_error}"
+                    "model forward failed: {forward_error}; Oxide completion drain failed: {drain_error}"
                 ))),
             };
         }
@@ -1420,11 +1423,11 @@ impl Pipeline for NormalPipeline {
         self.dynamic_lora.clone()
     }
 
-    #[cfg(all(feature = "loom-infer", target_family = "unix"))]
-    fn loom_paged_decode_stats(&self) -> candle_core::Result<Option<LoomPagedDecodeStats>> {
-        self.loom_decode
+    #[cfg(all(feature = "oxide-infer", target_family = "unix"))]
+    fn oxide_paged_decode_stats(&self) -> candle_core::Result<Option<OxidePagedDecodeStats>> {
+        self.oxide_decode
             .as_ref()
-            .map(LoomPagedDecodeRuntime::stats)
+            .map(OxidePagedDecodeRuntime::stats)
             .transpose()
     }
 
@@ -1526,7 +1529,7 @@ impl Pipeline for NormalPipeline {
                 Ok(ForwardInputsResult::CausalGeneration { logits })
             }
         })();
-        self.finish_loom_forward(forward)
+        self.finish_oxide_forward(forward)
     }
     fn attach_speculative(
         &mut self,

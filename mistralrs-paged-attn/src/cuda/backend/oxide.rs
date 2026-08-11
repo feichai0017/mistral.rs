@@ -4,17 +4,17 @@ use candle_core::{
     CpuStorage, CudaStorage, DType, Error, InplaceOp1, Layout, Result, Storage, Tensor,
 };
 use half::bf16;
-use loom_cuda_core::CudaContext;
-use loom_infer::{Bf16PagedBatchDecodeSpec, PagedKvLayout};
-use loom_infer_cuda::attention::{
+use oxide_cuda_core::CudaContext;
+use oxide_infer::{Bf16PagedBatchDecodeSpec, PagedKvLayout};
+use oxide_infer_cuda::attention::{
     Bf16PagedBatchDecodeArgs, Bf16PagedBatchDecodePlan, DecodeProvider,
 };
-use loom_infer_cuda::interop::{
+use oxide_infer_cuda::interop::{
     EngineAlgorithm, EngineCommand, EngineCommandCompletion, EngineCommandCompletionError,
     EngineCommandFailure, EngineEnqueueCause, EngineExecutionTrace, EngineExternalBindings,
     EngineInteropQueue, EngineOperator, ExternalCudaStream, StreamOrderedEngineAuthority,
 };
-use loom_infer_cuda::memory::{ReadDeviceRegion, ReadWriteDeviceRegion};
+use oxide_infer_cuda::memory::{ReadDeviceRegion, ReadWriteDeviceRegion};
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -51,12 +51,12 @@ struct CandleStreamAuthority {
 // SAFETY: this private authority exists only while the caller upholds the
 // runtime's exclusive model-runner submission contract.
 unsafe impl StreamOrderedEngineAuthority for CandleStreamAuthority {
-    fn submission_stream(&self) -> loom_cuda_core::sys::CUstream {
-        loom_stream(&self.stream)
+    fn submission_stream(&self) -> oxide_cuda_core::sys::CUstream {
+        oxide_stream(&self.stream)
     }
 }
 
-struct LoomRuntime {
+struct OxideRuntime {
     key: RuntimeKey,
     stream: Arc<CudaStream>,
     context: Arc<CudaContext>,
@@ -65,19 +65,19 @@ struct LoomRuntime {
     plans: HashMap<PlanKey, Bf16PagedBatchDecodePlan>,
 }
 
-impl LoomRuntime {
+impl OxideRuntime {
     fn new(key: RuntimeKey, ordinal: usize, stream: Arc<CudaStream>) -> Result<Self> {
         if key.stream <= 2 {
-            return Err(loom_error(
-                "Loom paged decode requires an ordinary CUDA stream",
+            return Err(oxide_error(
+                "Oxide paged decode requires an ordinary CUDA stream",
             ));
         }
         let context = CudaContext::new(ordinal).map_err(|error| {
-            loom_external_error("failed to retain the CUDA primary context", error)
+            oxide_external_error("failed to retain the CUDA primary context", error)
         })?;
         if context.cu_ctx() as usize != key.context {
-            return Err(loom_error(
-                "Candle and Loom resolved different CUDA contexts",
+            return Err(oxide_error(
+                "Candle and Oxide resolved different CUDA contexts",
             ));
         }
         let lease = Arc::new(CandleStreamLease {
@@ -86,13 +86,13 @@ impl LoomRuntime {
         // SAFETY: `stream` is retained by both this runtime and `lease`. The
         // public unsafe call contract supplies stream submission exclusivity.
         let external = unsafe {
-            ExternalCudaStream::from_raw_parts(loom_stream(&stream), Arc::clone(&context), lease)
+            ExternalCudaStream::from_raw_parts(oxide_stream(&stream), Arc::clone(&context), lease)
         }
-        .map_err(|error| loom_external_error("failed to import the Candle stream", error))?;
+        .map_err(|error| oxide_external_error("failed to import the Candle stream", error))?;
         let provider = DecodeProvider::load(&context)
-            .map_err(|error| loom_external_error("failed to load Loom decode kernels", error))?;
+            .map_err(|error| oxide_external_error("failed to load Oxide decode kernels", error))?;
         let queue = EngineInteropQueue::new(external, COMMAND_CAPACITY, MAX_IN_FLIGHT)
-            .map_err(|error| loom_external_error("failed to create the Loom queue", error))?;
+            .map_err(|error| oxide_external_error("failed to create the Oxide queue", error))?;
         Ok(Self {
             key,
             stream,
@@ -111,10 +111,9 @@ impl LoomRuntime {
         if let Some(plan) = self.plans.get(&key) {
             return Ok(plan.clone());
         }
-        let plan = self
-            .provider
-            .plan_bf16_paged_batch(spec)
-            .map_err(|error| loom_external_error("failed to create the Loom decode plan", error))?;
+        let plan = self.provider.plan_bf16_paged_batch(spec).map_err(|error| {
+            oxide_external_error("failed to create the Oxide decode plan", error)
+        })?;
         self.plans.insert(key, plan.clone());
         Ok(plan)
     }
@@ -128,7 +127,7 @@ impl LoomRuntime {
         let mut bindings = self
             .queue
             .bindings(BINDING_COUNT)
-            .map_err(|error| loom_external_error("failed to allocate Loom bindings", error))?;
+            .map_err(|error| oxide_external_error("failed to allocate Oxide bindings", error))?;
         let context = Arc::clone(&self.context);
 
         // SAFETY: pointer, extent, access, and lifetime facts were checked by
@@ -141,7 +140,7 @@ impl LoomRuntime {
                 tensor_lease(tensors.query),
             )
         }
-        .map_err(|error| loom_external_error("invalid query region", error))?;
+        .map_err(|error| oxide_external_error("invalid query region", error))?;
         // SAFETY: see the query region construction above.
         let key_pages = unsafe {
             ReadDeviceRegion::<bf16>::from_external_parts(
@@ -151,7 +150,7 @@ impl LoomRuntime {
                 tensor_lease(tensors.key_cache),
             )
         }
-        .map_err(|error| loom_external_error("invalid key-cache region", error))?;
+        .map_err(|error| oxide_external_error("invalid key-cache region", error))?;
         // SAFETY: see the query region construction above.
         let value_pages = unsafe {
             ReadDeviceRegion::<bf16>::from_external_parts(
@@ -161,7 +160,7 @@ impl LoomRuntime {
                 tensor_lease(tensors.value_cache),
             )
         }
-        .map_err(|error| loom_external_error("invalid value-cache region", error))?;
+        .map_err(|error| oxide_external_error("invalid value-cache region", error))?;
         // SAFETY: see the query region construction above.
         let page_indptr = unsafe {
             ReadDeviceRegion::<i32>::from_external_parts(
@@ -171,8 +170,8 @@ impl LoomRuntime {
                 tensor_lease(tensors.page_indptr),
             )
         }
-        .map_err(|error| loom_external_error("invalid page-indptr region", error))?;
-        // SAFETY: only the logical CSR prefix is exposed to Loom. The full
+        .map_err(|error| oxide_external_error("invalid page-indptr region", error))?;
+        // SAFETY: only the logical CSR prefix is exposed to Oxide. The full
         // contiguous Tensor remains retained by its independent lease.
         let page_indices = unsafe {
             ReadDeviceRegion::<i32>::from_external_range(
@@ -183,7 +182,7 @@ impl LoomRuntime {
                 tensor_lease(tensors.page_indices),
             )
         }
-        .map_err(|error| loom_external_error("invalid page-indices region", error))?;
+        .map_err(|error| oxide_external_error("invalid page-indices region", error))?;
         // SAFETY: see the query region construction above.
         let last_page_len = unsafe {
             ReadDeviceRegion::<i32>::from_external_parts(
@@ -193,7 +192,7 @@ impl LoomRuntime {
                 tensor_lease(tensors.last_page_len),
             )
         }
-        .map_err(|error| loom_external_error("invalid last-page-len region", error))?;
+        .map_err(|error| oxide_external_error("invalid last-page-len region", error))?;
         // SAFETY: the nested Candle in-place guards transfer exclusive write
         // access until the post-event wait is queued.
         let metadata_status = unsafe {
@@ -204,7 +203,7 @@ impl LoomRuntime {
                 tensor_lease(tensors.metadata_status),
             )
         }
-        .map_err(|error| loom_external_error("invalid metadata-status region", error))?;
+        .map_err(|error| oxide_external_error("invalid metadata-status region", error))?;
         // SAFETY: see the metadata-status region construction above.
         let output = unsafe {
             ReadWriteDeviceRegion::<bf16>::from_external_parts(
@@ -214,7 +213,7 @@ impl LoomRuntime {
                 tensor_lease(tensors.output),
             )
         }
-        .map_err(|error| loom_external_error("invalid output region", error))?;
+        .map_err(|error| oxide_external_error("invalid output region", error))?;
         // SAFETY: see the metadata-status region construction above.
         let lse = unsafe {
             ReadWriteDeviceRegion::<f32>::from_external_parts(
@@ -224,35 +223,35 @@ impl LoomRuntime {
                 tensor_lease(tensors.lse),
             )
         }
-        .map_err(|error| loom_external_error("invalid LSE region", error))?;
+        .map_err(|error| oxide_external_error("invalid LSE region", error))?;
 
         let query = bindings
             .bind_read_region(query)
-            .map_err(|error| loom_external_error("failed to bind query", error))?;
+            .map_err(|error| oxide_external_error("failed to bind query", error))?;
         let key_pages = bindings
             .bind_read_region(key_pages)
-            .map_err(|error| loom_external_error("failed to bind key cache", error))?;
+            .map_err(|error| oxide_external_error("failed to bind key cache", error))?;
         let value_pages = bindings
             .bind_read_region(value_pages)
-            .map_err(|error| loom_external_error("failed to bind value cache", error))?;
+            .map_err(|error| oxide_external_error("failed to bind value cache", error))?;
         let page_indptr = bindings
             .bind_read_region(page_indptr)
-            .map_err(|error| loom_external_error("failed to bind page indptr", error))?;
+            .map_err(|error| oxide_external_error("failed to bind page indptr", error))?;
         let page_indices = bindings
             .bind_read_region(page_indices)
-            .map_err(|error| loom_external_error("failed to bind page indices", error))?;
+            .map_err(|error| oxide_external_error("failed to bind page indices", error))?;
         let last_page_len = bindings
             .bind_read_region(last_page_len)
-            .map_err(|error| loom_external_error("failed to bind last page length", error))?;
+            .map_err(|error| oxide_external_error("failed to bind last page length", error))?;
         let metadata_status = bindings
             .bind_read_write_region(metadata_status)
-            .map_err(|error| loom_external_error("failed to bind metadata status", error))?;
+            .map_err(|error| oxide_external_error("failed to bind metadata status", error))?;
         let output = bindings
             .bind_read_write_region(output)
-            .map_err(|error| loom_external_error("failed to bind output", error))?;
+            .map_err(|error| oxide_external_error("failed to bind output", error))?;
         let lse = bindings
             .bind_read_write_region(lse)
-            .map_err(|error| loom_external_error("failed to bind LSE", error))?;
+            .map_err(|error| oxide_external_error("failed to bind LSE", error))?;
         let args = Bf16PagedBatchDecodeArgs::new(
             query,
             key_pages,
@@ -271,7 +270,7 @@ impl LoomRuntime {
         // unsafe call contract grants this authority for the exact spans.
         let external =
             unsafe { EngineExternalBindings::assume_engine_authority(bindings, authority) }
-                .map_err(|error| loom_external_error("failed to couple Candle bindings", error))?;
+                .map_err(|error| oxide_external_error("failed to couple Candle bindings", error))?;
         let submission = self
             .queue
             .enqueue(EngineCommand::Bf16PagedBatchDecode { plan, args }, external)
@@ -280,11 +279,11 @@ impl LoomRuntime {
                     error.cause(),
                     EngineEnqueueCause::InFlightCapacityExceeded
                 ) {
-                    loom_error(format!(
-                        "Loom decode has {MAX_IN_FLIGHT} commands in flight; drain completions before submitting more"
+                    oxide_error(format!(
+                        "Oxide decode has {MAX_IN_FLIGHT} commands in flight; drain completions before submitting more"
                     ))
                 } else {
-                    loom_external_error("Loom decode enqueue failed", error)
+                    oxide_external_error("Oxide decode enqueue failed", error)
                 }
             })?;
         let (completion, authority) = submission.into_parts();
@@ -297,9 +296,9 @@ struct PendingDecode {
     completion: EngineCommandCompletion,
 }
 
-/// Read-only evidence from the single-stream Loom decode runtime.
+/// Read-only evidence from the single-stream Oxide decode runtime.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct LoomPagedDecodeStats {
+pub struct OxidePagedDecodeStats {
     submitted: u64,
     completed: u64,
     failed: u64,
@@ -311,7 +310,7 @@ pub struct LoomPagedDecodeStats {
     adapter_device_to_device_copies: usize,
 }
 
-impl LoomPagedDecodeStats {
+impl OxidePagedDecodeStats {
     pub const fn submitted(self) -> u64 {
         self.submitted
     }
@@ -367,13 +366,13 @@ impl LoomPagedDecodeStats {
     }
 }
 
-/// An error returned while draining queued Loom decode completions.
+/// An error returned while draining queued Oxide decode completions.
 #[derive(Debug, thiserror::Error)]
-pub enum LoomPagedDecodeDrainError {
-    #[error("Loom decode runtime is poisoned after {drained} completions settled")]
+pub enum OxidePagedDecodeDrainError {
+    #[error("Oxide decode runtime is poisoned after {drained} completions settled")]
     RuntimePoisoned { drained: usize },
     #[error(
-        "Loom decode completion at FIFO position {failed_position} failed after {drained} completions settled: {source}"
+        "Oxide decode completion at FIFO position {failed_position} failed after {drained} completions settled: {source}"
     )]
     Completion {
         drained: usize,
@@ -383,7 +382,7 @@ pub enum LoomPagedDecodeDrainError {
     },
 }
 
-impl LoomPagedDecodeDrainError {
+impl OxidePagedDecodeDrainError {
     pub const fn drained(&self) -> usize {
         match self {
             Self::RuntimePoisoned { drained } | Self::Completion { drained, .. } => *drained,
@@ -416,85 +415,85 @@ impl LoomPagedDecodeDrainError {
 }
 
 #[derive(Default)]
-struct LoomPagedDecodeRuntimeState {
-    runtime: Option<LoomRuntime>,
+struct OxidePagedDecodeRuntimeState {
+    runtime: Option<OxideRuntime>,
     pending: VecDeque<PendingDecode>,
-    stats: LoomPagedDecodeStats,
+    stats: OxidePagedDecodeStats,
 }
 
-impl LoomPagedDecodeRuntimeState {
+impl OxidePagedDecodeRuntimeState {
     fn ensure_runtime(
         &mut self,
         key: RuntimeKey,
         ordinal: usize,
         stream: Arc<CudaStream>,
-    ) -> Result<&mut LoomRuntime> {
+    ) -> Result<&mut OxideRuntime> {
         if let Some(runtime) = self.runtime.as_ref() {
             if runtime.key != key {
-                return Err(loom_error(
-                    "Loom paged decode runtime is already bound to another CUDA context or stream",
+                return Err(oxide_error(
+                    "Oxide paged decode runtime is already bound to another CUDA context or stream",
                 ));
             }
         }
         if self.runtime.is_none() {
-            self.runtime = Some(LoomRuntime::new(key, ordinal, stream)?);
+            self.runtime = Some(OxideRuntime::new(key, ordinal, stream)?);
         }
         self.runtime
             .as_mut()
-            .ok_or_else(|| loom_error("Loom decode runtime initialization did not complete"))
+            .ok_or_else(|| oxide_error("Oxide decode runtime initialization did not complete"))
     }
 }
 
-/// A model-owned Loom paged-decode runtime bound lazily to one CUDA stream.
-pub struct LoomPagedDecodeRuntime {
+/// A model-owned Oxide paged-decode runtime bound lazily to one CUDA stream.
+pub struct OxidePagedDecodeRuntime {
     lifecycle: Mutex<()>,
-    state: Mutex<LoomPagedDecodeRuntimeState>,
+    state: Mutex<OxidePagedDecodeRuntimeState>,
 }
 
-impl Default for LoomPagedDecodeRuntime {
+impl Default for OxidePagedDecodeRuntime {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl LoomPagedDecodeRuntime {
+impl OxidePagedDecodeRuntime {
     /// Creates an unbound runtime. The first enqueue binds its CUDA context and stream.
     pub fn new() -> Self {
         Self {
             lifecycle: Mutex::new(()),
-            state: Mutex::new(LoomPagedDecodeRuntimeState::default()),
+            state: Mutex::new(OxidePagedDecodeRuntimeState::default()),
         }
     }
 
     fn lock_lifecycle(&self) -> Result<MutexGuard<'_, ()>> {
         self.lifecycle
             .lock()
-            .map_err(|_| loom_error("Loom decode runtime lifecycle is poisoned"))
+            .map_err(|_| oxide_error("Oxide decode runtime lifecycle is poisoned"))
     }
 
     fn lock_lifecycle_for_drain(
         &self,
         drained: usize,
-    ) -> std::result::Result<MutexGuard<'_, ()>, LoomPagedDecodeDrainError> {
+    ) -> std::result::Result<MutexGuard<'_, ()>, OxidePagedDecodeDrainError> {
         self.lifecycle
             .lock()
-            .map_err(|_| LoomPagedDecodeDrainError::RuntimePoisoned { drained })
+            .map_err(|_| OxidePagedDecodeDrainError::RuntimePoisoned { drained })
     }
 
-    fn lock_state(&self) -> Result<MutexGuard<'_, LoomPagedDecodeRuntimeState>> {
+    fn lock_state(&self) -> Result<MutexGuard<'_, OxidePagedDecodeRuntimeState>> {
         self.state
             .lock()
-            .map_err(|_| loom_error("Loom decode runtime is poisoned"))
+            .map_err(|_| oxide_error("Oxide decode runtime is poisoned"))
     }
 
     fn lock_state_for_drain(
         &self,
         drained: usize,
-    ) -> std::result::Result<MutexGuard<'_, LoomPagedDecodeRuntimeState>, LoomPagedDecodeDrainError>
+    ) -> std::result::Result<MutexGuard<'_, OxidePagedDecodeRuntimeState>, OxidePagedDecodeDrainError>
     {
         self.state
             .lock()
-            .map_err(|_| LoomPagedDecodeDrainError::RuntimePoisoned { drained })
+            .map_err(|_| OxidePagedDecodeDrainError::RuntimePoisoned { drained })
     }
 }
 
@@ -526,7 +525,7 @@ struct DecodePointers {
 }
 
 struct DecodeLaunch<'a> {
-    runtime: &'a LoomPagedDecodeRuntime,
+    runtime: &'a OxidePagedDecodeRuntime,
     key: RuntimeKey,
     plan: Bf16PagedBatchDecodePlan,
     tensors: DecodeTensors<'a>,
@@ -539,11 +538,11 @@ struct OutputInplace<'a> {
 
 impl InplaceOp1 for OutputInplace<'_> {
     fn name(&self) -> &'static str {
-        "loom-paged-decode-output"
+        "oxide-paged-decode-output"
     }
 
     fn cpu_fwd(&self, _storage: &mut CpuStorage, _layout: &Layout) -> Result<()> {
-        Err(loom_error("Loom paged decode requires CUDA storage"))
+        Err(oxide_error("Oxide paged decode requires CUDA storage"))
     }
 
     fn cuda_fwd(&self, storage: &mut CudaStorage, layout: &Layout) -> Result<()> {
@@ -567,11 +566,11 @@ struct LseInplace<'a> {
 
 impl InplaceOp1 for LseInplace<'_> {
     fn name(&self) -> &'static str {
-        "loom-paged-decode-lse"
+        "oxide-paged-decode-lse"
     }
 
     fn cpu_fwd(&self, _storage: &mut CpuStorage, _layout: &Layout) -> Result<()> {
-        Err(loom_error("Loom paged decode requires CUDA storage"))
+        Err(oxide_error("Oxide paged decode requires CUDA storage"))
     }
 
     fn cuda_fwd(&self, storage: &mut CudaStorage, layout: &Layout) -> Result<()> {
@@ -600,11 +599,11 @@ struct StatusInplace<'a> {
 
 impl InplaceOp1 for StatusInplace<'_> {
     fn name(&self) -> &'static str {
-        "loom-paged-decode-status"
+        "oxide-paged-decode-status"
     }
 
     fn cpu_fwd(&self, _storage: &mut CpuStorage, _layout: &Layout) -> Result<()> {
-        Err(loom_error("Loom paged decode requires CUDA storage"))
+        Err(oxide_error("Oxide paged decode requires CUDA storage"))
     }
 
     fn cuda_fwd(&self, storage: &mut CudaStorage, layout: &Layout) -> Result<()> {
@@ -695,7 +694,7 @@ fn enqueue_with_read_guards(
             .runtime
             .as_mut()
             .filter(|runtime| runtime.key == launch.key)
-            .ok_or_else(|| loom_error("Loom decode runtime binding changed before enqueue"))?;
+            .ok_or_else(|| oxide_error("Oxide decode runtime binding changed before enqueue"))?;
         runtime.enqueue(&launch.plan, tensors, pointers)?
     };
     drop(last_guard);
@@ -707,10 +706,10 @@ fn enqueue_with_read_guards(
     Ok(completion)
 }
 
-impl LoomPagedDecodeRuntime {
+impl OxidePagedDecodeRuntime {
     /// Enqueues one BF16, D128, page-size-16 HND paged decode.
     ///
-    /// `logical_page_count` is the CSR terminal value. Loom reads only this
+    /// `logical_page_count` is the CSR terminal value. Oxide reads only this
     /// prefix of a padded `paged_kv_indices` tensor.
     ///
     /// # Safety
@@ -743,21 +742,23 @@ impl LoomPagedDecodeRuntime {
         let _lifecycle = self.lock_lifecycle()?;
         let device = query.device().as_cuda_device()?;
         if !device.is_event_tracking() {
-            return Err(loom_error("Loom paged decode requires CUDA event tracking"));
+            return Err(oxide_error(
+                "Oxide paged decode requires CUDA event tracking",
+            ));
         }
         let stream = device.cuda_stream();
         if stream.capture_status().map_err(|error| {
-            loom_external_error("failed to query CUDA stream capture status", error)
+            oxide_external_error("failed to query CUDA stream capture status", error)
         })? != candle_core::cuda::cudarc::driver::sys::CUstreamCaptureStatus::CU_STREAM_CAPTURE_STATUS_NONE
         {
-            return Err(loom_error(
-                "Loom paged decode does not support active CUDA graph capture",
+            return Err(oxide_error(
+                "Oxide paged decode does not support active CUDA graph capture",
             ));
         }
         let key = runtime_key(&stream);
         if key.stream <= 2 {
-            return Err(loom_error(
-                "Loom paged decode requires Device::new_cuda_with_stream",
+            return Err(oxide_error(
+                "Oxide paged decode requires Device::new_cuda_with_stream",
             ));
         }
         let ordinal = stream.context().ordinal();
@@ -772,7 +773,7 @@ impl LoomPagedDecodeRuntime {
             page_size,
             PagedKvLayout::Hnd,
         )
-        .map_err(|error| loom_external_error("invalid Loom paged-decode contract", error))?;
+        .map_err(|error| oxide_external_error("invalid Oxide paged-decode contract", error))?;
         let plan_key = PlanKey {
             batch_size,
             max_num_pages,
@@ -822,7 +823,7 @@ impl LoomPagedDecodeRuntime {
         let completion = launch
             .completion
             .into_inner()
-            .ok_or_else(|| loom_error("Loom decode returned without a completion"))?;
+            .ok_or_else(|| oxide_error("Oxide decode returned without a completion"))?;
         let mut state = self.lock_state()?;
         state.stats.record_submission(completion.trace());
         state.pending.push_back(PendingDecode { completion });
@@ -830,7 +831,7 @@ impl LoomPagedDecodeRuntime {
     }
 
     /// Waits for all queued decode commands in submission order.
-    pub fn drain(&self) -> std::result::Result<usize, LoomPagedDecodeDrainError> {
+    pub fn drain(&self) -> std::result::Result<usize, OxidePagedDecodeDrainError> {
         let mut drained = 0;
         let mut first_error = None;
         let _lifecycle = self.lock_lifecycle_for_drain(drained)?;
@@ -838,11 +839,13 @@ impl LoomPagedDecodeRuntime {
             let pending = self.lock_state_for_drain(drained)?.pending.pop_front();
             let Some(pending) = pending else {
                 return match first_error {
-                    Some((failed_position, source)) => Err(LoomPagedDecodeDrainError::Completion {
-                        drained,
-                        failed_position,
-                        source,
-                    }),
+                    Some((failed_position, source)) => {
+                        Err(OxidePagedDecodeDrainError::Completion {
+                            drained,
+                            failed_position,
+                            source,
+                        })
+                    }
                     None => Ok(drained),
                 };
             };
@@ -860,7 +863,7 @@ impl LoomPagedDecodeRuntime {
     }
 
     /// Returns a snapshot of provider-hit and completion evidence.
-    pub fn stats(&self) -> Result<LoomPagedDecodeStats> {
+    pub fn stats(&self) -> Result<OxidePagedDecodeStats> {
         Ok(self.lock_state()?.stats)
     }
 }
@@ -890,34 +893,34 @@ fn validate_inputs(
         ("last page length", last_page_len),
     ] {
         if !tensor.layout().is_contiguous() {
-            return Err(loom_error(format!(
-                "Loom paged decode requires contiguous {name}"
+            return Err(oxide_error(format!(
+                "Oxide paged decode requires contiguous {name}"
             )));
         }
         if tensor.device().location() != query.device().location() {
-            return Err(loom_error(format!(
-                "Loom paged decode requires {name} on the query device"
+            return Err(oxide_error(format!(
+                "Oxide paged decode requires {name} on the query device"
             )));
         }
     }
     let (batch_size, _, head_dim) = query.dims3()?;
     let key_shape = key_cache.dims4()?;
     if value_cache.dims4()? != key_shape {
-        return Err(loom_error("Loom paged decode cache shapes do not match"));
+        return Err(oxide_error("Oxide paged decode cache shapes do not match"));
     }
     if head_dim != HEAD_DIM || key_shape.2 != PAGE_SIZE || key_shape.3 != HEAD_DIM {
-        return Err(loom_error(
-            "Loom paged decode requires BF16/D128/page16/HND cache tensors",
+        return Err(oxide_error(
+            "Oxide paged decode requires BF16/D128/page16/HND cache tensors",
         ));
     }
     if page_indptr.dims1()? != batch_size + 1 || last_page_len.dims1()? != batch_size {
-        return Err(loom_error(
-            "Loom paged decode received invalid CSR metadata shapes",
+        return Err(oxide_error(
+            "Oxide paged decode received invalid CSR metadata shapes",
         ));
     }
     let physical_page_indices = page_indices.dims1()?;
     if logical_page_count < batch_size || logical_page_count > physical_page_indices {
-        return Err(loom_error(format!(
+        return Err(oxide_error(format!(
             "logical page count {logical_page_count} is outside {batch_size}..={physical_page_indices}"
         )));
     }
@@ -928,8 +931,8 @@ fn require_dtype(tensor: &Tensor, expected: DType, name: &str) -> Result<()> {
     if tensor.dtype() == expected {
         Ok(())
     } else {
-        Err(loom_error(format!(
-            "Loom paged decode requires {name} dtype {expected:?}, got {:?}",
+        Err(oxide_error(format!(
+            "Oxide paged decode requires {name} dtype {expected:?}, got {:?}",
             tensor.dtype()
         )))
     }
@@ -941,8 +944,8 @@ fn require_cuda_storage<'a>(
     name: &str,
 ) -> Result<&'a CudaStorage> {
     let Storage::Cuda(storage) = storage else {
-        return Err(loom_error(format!(
-            "Loom paged decode requires CUDA {name} storage"
+        return Err(oxide_error(format!(
+            "Oxide paged decode requires CUDA {name} storage"
         )));
     };
     require_runtime_stream(storage, key, name)?;
@@ -956,8 +959,8 @@ fn require_runtime_stream(
 ) -> Result<Arc<CudaStream>> {
     let stream = storage.device().cuda_stream();
     if runtime_key(&stream) != key {
-        return Err(loom_error(format!(
-            "Loom paged decode requires {name} on one CUDA context and stream"
+        return Err(oxide_error(format!(
+            "Oxide paged decode requires {name} on one CUDA context and stream"
         )));
     }
     Ok(stream)
@@ -970,7 +973,7 @@ fn runtime_key(stream: &CudaStream) -> RuntimeKey {
     }
 }
 
-fn loom_stream(stream: &CudaStream) -> loom_cuda_core::sys::CUstream {
+fn oxide_stream(stream: &CudaStream) -> oxide_cuda_core::sys::CUstream {
     stream.cu_stream().cast()
 }
 
@@ -981,15 +984,15 @@ fn tensor_lease(tensor: &Tensor) -> Arc<dyn Any + Send + Sync> {
 fn offset_pointer<T>(base: u64, offset: usize) -> Result<u64> {
     let bytes = offset
         .checked_mul(std::mem::size_of::<T>())
-        .ok_or_else(|| loom_error("CUDA tensor offset overflow"))?;
+        .ok_or_else(|| oxide_error("CUDA tensor offset overflow"))?;
     base.checked_add(bytes as u64)
-        .ok_or_else(|| loom_error("CUDA device pointer overflow"))
+        .ok_or_else(|| oxide_error("CUDA device pointer overflow"))
 }
 
-fn loom_external_error(context: &str, error: impl std::fmt::Display) -> Error {
-    loom_error(format!("{context}: {error}"))
+fn oxide_external_error(context: &str, error: impl std::fmt::Display) -> Error {
+    oxide_error(format!("{context}: {error}"))
 }
 
-fn loom_error(message: impl Into<String>) -> Error {
+fn oxide_error(message: impl Into<String>) -> Error {
     Error::Msg(message.into()).bt()
 }

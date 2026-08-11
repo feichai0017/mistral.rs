@@ -142,7 +142,7 @@ metal = [
 ]
 flash-attn = ["cuda", "dep:mistralrs-flash-attn", "mistralrs-flash-attn/cuda"]
 flash-attn-v3 = ["cuda", "dep:candle-flash-attn-v3"]
-loom-infer = ["cuda", "mistralrs-paged-attn/loom-infer"]
+oxide-infer = ["cuda", "mistralrs-paged-attn/oxide-infer"]
 accelerate = ["candle-core/accelerate", "candle-nn/accelerate", "mistralrs-quant/accelerate"]
 mkl = ["candle-core/mkl", "candle-nn/mkl"]
 nccl = ["cuda", "mistralrs-quant/nccl"]

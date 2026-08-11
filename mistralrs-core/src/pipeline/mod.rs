@@ -1243,10 +1243,10 @@ pub trait Pipeline:
         None
     }
 
-    #[cfg(all(feature = "loom-infer", target_family = "unix"))]
-    fn loom_paged_decode_stats(
+    #[cfg(all(feature = "oxide-infer", target_family = "unix"))]
+    fn oxide_paged_decode_stats(
         &self,
-    ) -> candle_core::Result<Option<crate::paged_attention::LoomPagedDecodeStats>> {
+    ) -> candle_core::Result<Option<crate::paged_attention::OxidePagedDecodeStats>> {
         Ok(None)
     }
 

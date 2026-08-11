@@ -99,7 +99,7 @@ pub(crate) struct DecodePlanInput {
 pub(crate) enum DecodePlan {
     #[cfg(all(feature = "cuda", target_family = "unix"))]
     FlashInfer(FlashInferDecodePlan),
-    Loom,
+    Oxide,
     GatherSdpa,
     PagedAttention,
 }
@@ -115,7 +115,7 @@ impl DecodePlan {
                 AttentionBackendKind::FlashInfer | AttentionBackendKind::Standard => {
                     head_size > FlashInferDecodePlan::head_size_limit(attention_backend)
                 }
-                AttentionBackendKind::Loom => true,
+                AttentionBackendKind::Oxide => true,
             }
         }
         #[cfg(not(all(feature = "cuda", target_family = "unix")))]
@@ -123,13 +123,13 @@ impl DecodePlan {
             let _ = head_size;
             matches!(
                 attention_backend,
-                AttentionBackendKind::FlashInfer | AttentionBackendKind::Loom
+                AttentionBackendKind::FlashInfer | AttentionBackendKind::Oxide
             )
         }
     }
 
     pub fn choose(input: DecodePlanInput) -> Result<Self> {
-        if input.attention_backend == AttentionBackendKind::Loom {
+        if input.attention_backend == AttentionBackendKind::Oxide {
             let expected_softmax_scale = 1.0 / 128.0_f32.sqrt();
             if input.dtype != DType::BF16
                 || input.query_len != 1
@@ -146,7 +146,7 @@ impl DecodePlan {
                 || input.has_custom_mask
             {
                 candle_core::bail!(
-                    "Loom paged decode requires one query token, BF16, head_size=128, block_size=16, default softmax scale, nonzero query/kv heads with query_heads divisible by kv_heads, and no alibi, sinks, sliding window, softcap, or custom mask; got dtype={:?}, query_len={}, query_heads={}, kv_heads={}, head_size={}, block_size={}, softmax_scale={}, expected_softmax_scale={}, alibi={}, sinks={}, sliding_window={}, softcap={}, custom_mask={}",
+                    "Oxide paged decode requires one query token, BF16, head_size=128, block_size=16, default softmax scale, nonzero query/kv heads with query_heads divisible by kv_heads, and no alibi, sinks, sliding window, softcap, or custom mask; got dtype={:?}, query_len={}, query_heads={}, kv_heads={}, head_size={}, block_size={}, softmax_scale={}, expected_softmax_scale={}, alibi={}, sinks={}, sliding_window={}, softcap={}, custom_mask={}",
                     input.dtype,
                     input.query_len,
                     input.query_heads,
@@ -162,7 +162,7 @@ impl DecodePlan {
                     input.has_custom_mask,
                 );
             }
-            return Ok(Self::Loom);
+            return Ok(Self::Oxide);
         }
         if input.has_custom_mask {
             return Ok(Self::GatherSdpa);
@@ -184,7 +184,7 @@ impl DecodePlan {
             AttentionBackendKind::FlashInfer => Ok(Self::GatherSdpa),
             AttentionBackendKind::Standard if input.has_sliding_window => Ok(Self::GatherSdpa),
             AttentionBackendKind::Standard => Ok(Self::PagedAttention),
-            AttentionBackendKind::Loom => unreachable!(),
+            AttentionBackendKind::Oxide => unreachable!(),
         }
     }
 }
@@ -269,9 +269,9 @@ mod tests {
         assert!(matches!(plan, DecodePlan::PagedAttention));
     }
 
-    fn loom_decode_input() -> DecodePlanInput {
+    fn oxide_decode_input() -> DecodePlanInput {
         DecodePlanInput {
-            attention_backend: AttentionBackendKind::Loom,
+            attention_backend: AttentionBackendKind::Oxide,
             dtype: DType::BF16,
             query_len: 1,
             query_heads: 12,
@@ -288,75 +288,75 @@ mod tests {
     }
 
     #[test]
-    fn loom_decode_accepts_only_the_admitted_contract() {
+    fn oxide_decode_accepts_only_the_admitted_contract() {
         assert!(matches!(
-            DecodePlan::choose(loom_decode_input()).unwrap(),
-            DecodePlan::Loom
+            DecodePlan::choose(oxide_decode_input()).unwrap(),
+            DecodePlan::Oxide
         ));
 
         let unsupported = [
             {
-                let mut input = loom_decode_input();
+                let mut input = oxide_decode_input();
                 input.dtype = DType::F16;
                 input
             },
             {
-                let mut input = loom_decode_input();
+                let mut input = oxide_decode_input();
                 input.query_len = 2;
                 input
             },
             {
-                let mut input = loom_decode_input();
+                let mut input = oxide_decode_input();
                 input.query_heads = 0;
                 input
             },
             {
-                let mut input = loom_decode_input();
+                let mut input = oxide_decode_input();
                 input.kv_heads = 0;
                 input
             },
             {
-                let mut input = loom_decode_input();
+                let mut input = oxide_decode_input();
                 input.query_heads = 13;
                 input
             },
             {
-                let mut input = loom_decode_input();
+                let mut input = oxide_decode_input();
                 input.head_size = 64;
                 input
             },
             {
-                let mut input = loom_decode_input();
+                let mut input = oxide_decode_input();
                 input.block_size = 32;
                 input
             },
             {
-                let mut input = loom_decode_input();
+                let mut input = oxide_decode_input();
                 input.softmax_scale = 0.125;
                 input
             },
             {
-                let mut input = loom_decode_input();
+                let mut input = oxide_decode_input();
                 input.has_alibi = true;
                 input
             },
             {
-                let mut input = loom_decode_input();
+                let mut input = oxide_decode_input();
                 input.has_sinks = true;
                 input
             },
             {
-                let mut input = loom_decode_input();
+                let mut input = oxide_decode_input();
                 input.has_sliding_window = true;
                 input
             },
             {
-                let mut input = loom_decode_input();
+                let mut input = oxide_decode_input();
                 input.has_softcap = true;
                 input
             },
             {
-                let mut input = loom_decode_input();
+                let mut input = oxide_decode_input();
                 input.has_custom_mask = true;
                 input
             },

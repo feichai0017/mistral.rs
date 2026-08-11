@@ -3,9 +3,9 @@ mod context_attention_mla;
 mod flash_attn_sinks;
 mod flashinfer;
 mod gather_kv;
-#[cfg(feature = "loom-infer")]
-mod loom;
 mod mla;
+#[cfg(feature = "oxide-infer")]
+mod oxide;
 mod paged_attention;
 mod scale_update;
 pub use cache::{copy_blocks, swap_blocks};
@@ -20,9 +20,9 @@ pub use flashinfer::{
     reshape_and_cache_flashinfer, FlashInferDecodeScratch,
 };
 pub use gather_kv::gather_kv_cache;
-#[cfg(feature = "loom-infer")]
-pub use loom::{LoomPagedDecodeDrainError, LoomPagedDecodeRuntime, LoomPagedDecodeStats};
 pub use mla::{concat_and_cache_mla, flashinfer_mla_decode, gather_mla_cache};
+#[cfg(feature = "oxide-infer")]
+pub use oxide::{OxidePagedDecodeDrainError, OxidePagedDecodeRuntime, OxidePagedDecodeStats};
 pub use paged_attention::{paged_attention, reshape_and_cache};
 pub use scale_update::kv_scale_update;
 

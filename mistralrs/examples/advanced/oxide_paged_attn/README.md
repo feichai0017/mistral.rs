@@ -1,6 +1,6 @@
-# Loom paged-decode proof of concept
+# Oxide paged-decode proof of concept
 
-This binary routes Mistral.rs decode attention through Loom Infer. It is an
+This binary routes Mistral.rs decode attention through Oxide Infer. It is an
 isolated, single-GPU proof of concept. It is not a general or production-safe
 provider.
 
@@ -10,12 +10,12 @@ Keep both repositories under one parent directory:
 
 ```text
 workspace/
-|-- loom-infer/  # d27b6e5
+|-- oxide-infer/  # d27b6e5
 `-- mistral.rs/  # this overlay, based on 8010b6a0
 ```
 
-The optional Cargo dependencies use `../loom-infer`. A standalone Mistral.rs
-checkout cannot resolve the `loom-infer` feature.
+The optional Cargo dependencies use `../oxide-infer`. A standalone Mistral.rs
+checkout cannot resolve the `oxide-infer` feature.
 
 ## Admitted contract
 
@@ -32,24 +32,24 @@ fallback provider.
 
 ## Run
 
-Run the Loom path:
+Run the Oxide path:
 
 ```bash
-MISTRALRS_LOOM_INFER=1 \
+MISTRALRS_OXIDE_INFER=1 \
 MISTRALRS_CUDA_GRAPHS=0 \
-LOOM_MODEL_PATH=/path/to/qwen2.5-1.5b-instruct \
-cargo +nightly-2026-04-03 oxide run --bin loom_paged_attn \
-  --features loom-infer --arch sm_90
+OXIDE_MODEL_PATH=/path/to/qwen2.5-1.5b-instruct \
+cargo +nightly-2026-04-03 oxide run --bin oxide_paged_attn \
+  --features oxide-infer --arch sm_90
 ```
 
 Run the same deterministic request through the default Mistral.rs provider:
 
 ```bash
-LOOM_BASELINE=1 \
+OXIDE_BASELINE=1 \
 MISTRALRS_CUDA_GRAPHS=0 \
-LOOM_MODEL_PATH=/path/to/qwen2.5-1.5b-instruct \
-cargo +nightly-2026-04-03 oxide run --bin loom_paged_attn \
-  --features loom-infer --arch sm_90
+OXIDE_MODEL_PATH=/path/to/qwen2.5-1.5b-instruct \
+cargo +nightly-2026-04-03 oxide run --bin oxide_paged_attn \
+  --features oxide-infer --arch sm_90
 ```
 
 For Qwen2.5-1.5B-Instruct, the default provider is Mistral.rs standard paged
@@ -59,27 +59,27 @@ Run the adapter recovery gate from the paged-attention crate:
 
 ```bash
 cd mistralrs-paged-attn
-cargo +nightly-2026-04-03 oxide run --bin loom_adapter_h20 \
-  --features loom-infer --arch sm_90
+cargo +nightly-2026-04-03 oxide run --bin oxide_adapter_h20 \
+  --features oxide-infer --arch sm_90
 ```
 
 ## Historical H20 results
 
-The 2026-08-11 run used an NVIDIA H20, CUDA 13.1, cuda-oxide `868f8ec`, Loom
-`d27b6e5`, and the Mistral.rs base `8010b6a0`. The model smoke ran source
-`9f6acf2a`; the recovery gate ran source `805dc8f1`. Commit `4f096d7c` later
-recorded both results.
+The archived 2026-08-11 run predates the project rename. It used an NVIDIA H20,
+CUDA 13.1, cuda-oxide `868f8ec`, project commit `d27b6e5`, and Mistral.rs base
+`8010b6a0`. The model smoke ran source `9f6acf2a`; the recovery gate ran source
+`805dc8f1`. Commit `4f096d7c` later recorded both results.
 
 - The model weight SHA-256 was
   `dd924a11b4c220f385b51ffa522daea7c9f3d850e31b162bb5661df483c6d3ee`.
-- Loom completed 196 of 196 paged-decode operator submissions with no error.
+- The native provider completed 196 of 196 paged-decode operator submissions with no error.
   This is 28 layers over seven decode steps, not 196 kernel launches.
 - The provider used HND layout and the 8-warp token-parallel algorithm for
   Qwen's 12 query heads and 2 KV heads. It does not mean eight-GPU tensor
   parallelism.
 - The adapter retained nine external regions and issued no device-to-device
   copy. This does not prove that the full model is zero-copy.
-- Loom and the standard provider emitted the same eight selected token strings
+- The native and standard providers emitted the same eight selected token strings
   and decoded text.
 - The selected-token log-probability absolute difference had maximum
   `0.066255` and mean `0.0195841382`.
@@ -104,7 +104,7 @@ source hashes and command output.
 
 ### Provider boundary
 
-Only decode attention uses Loom. Prefill and KV cache writes keep their existing
+Only decode attention uses Oxide. Prefill and KV cache writes keep their existing
 Mistral.rs implementations.
 
 ## Model-owned runtime requalification
@@ -112,7 +112,7 @@ Mistral.rs implementations.
 Commit `b4e4a1c8` moved the runtime, completion FIFO, and provider counters from
 process-global state into `NormalPipeline`. Commit `84602212` fixed the
 feature-only lifetime errors found by the first H20 build. The validated source
-manifest matched `84602212` and used Loom `d27b6e5`.
+manifest matched `84602212` and used project commit `d27b6e5`.
 
 The adapter gate completed seven commands. It returned one typed
 `PageIndexOutOfRange` rejection at FIFO position two, reused the same runtime,
@@ -120,7 +120,7 @@ and serialized two concurrent drain callers over a two-command FIFO. All six
 valid outputs matched the CPU oracle.
 
 The Qwen model path completed 196 of 196 paged-decode operator calls with no
-provider error. Loom and the standard provider selected the same eight token
+provider error. The native and standard providers selected the same eight token
 strings and decoded text.
 
 The adapter recorded nine external regions and no

@@ -2,11 +2,11 @@
 
 use candle_core::{Device, Tensor};
 use half::bf16;
-use loom_infer::{
+use mistralrs_paged_attn::{OxidePagedDecodeRuntime, OxidePagedDecodeStats};
+use oxide_infer::{
     paged_batch_decode_bf16_reference, Bf16PagedBatchDecodeSpec, ContractError, PagedKvLayout,
 };
-use loom_infer_cuda::interop::{EngineAlgorithm, EngineCommandFailure, EngineOperator};
-use mistralrs_paged_attn::{LoomPagedDecodeRuntime, LoomPagedDecodeStats};
+use oxide_infer_cuda::interop::{EngineAlgorithm, EngineCommandFailure, EngineOperator};
 use std::error::Error;
 
 const BATCH_SIZE: usize = 2;
@@ -21,7 +21,7 @@ const OUTPUT_MAX_ABS_LIMIT: f32 = 0.015_625;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let device = Device::new_cuda_with_stream(0)?;
-    let runtime = LoomPagedDecodeRuntime::new();
+    let runtime = OxidePagedDecodeRuntime::new();
     let spec = Bf16PagedBatchDecodeSpec::new(
         BATCH_SIZE,
         MAX_NUM_PAGES,
@@ -224,7 +224,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     println!(
-        "gate=loom_adapter_h20 status=pass sequence=valid,invalid,valid,valid,drain,valid,drain \
+        "gate=oxide_adapter_h20 status=pass sequence=valid,invalid,valid,valid,drain,valid,drain \
          submitted_delta=7 completed_delta=7 failed_delta=1 typed_page_error=true \
          fifo_failed_position=2 same_runtime_reuse=true layout=HND gqa_group=6 \
          algorithm=PagedBatchDecodeTokenParallel8 adapter_zero_copy=true \
@@ -239,7 +239,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 #[allow(unsafe_code)]
 fn enqueue(
-    runtime: &LoomPagedDecodeRuntime,
+    runtime: &OxidePagedDecodeRuntime,
     query: &Tensor,
     key_cache: &Tensor,
     value_cache: &Tensor,
@@ -290,8 +290,8 @@ fn compare_output(output: &Tensor, expected: &[bf16], name: &str) -> Result<f32,
 }
 
 fn assert_stats_delta(
-    actual: LoomPagedDecodeStats,
-    baseline: LoomPagedDecodeStats,
+    actual: OxidePagedDecodeStats,
+    baseline: OxidePagedDecodeStats,
     submitted: u64,
     completed: u64,
     failed: u64,

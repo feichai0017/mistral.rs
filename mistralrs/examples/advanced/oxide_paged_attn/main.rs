@@ -1,12 +1,12 @@
-//! Run one local Qwen2.5 model through the Loom paged-decode provider.
+//! Run one local Qwen2.5 model through the Oxide paged-decode provider.
 //!
 //! ```text
-//! MISTRALRS_LOOM_INFER=1 LOOM_MODEL_PATH=/path/to/qwen2.5-1.5b-instruct \
-//! cargo +nightly-2026-04-03 oxide run --bin loom_paged_attn \
-//!   --features loom-infer --arch sm_90
+//! MISTRALRS_OXIDE_INFER=1 OXIDE_MODEL_PATH=/path/to/qwen2.5-1.5b-instruct \
+//! cargo +nightly-2026-04-03 oxide run --bin oxide_paged_attn \
+//!   --features oxide-infer --arch sm_90
 //! ```
 //!
-//! Set `LOOM_BASELINE=1` instead of `MISTRALRS_LOOM_INFER=1` to run the
+//! Set `OXIDE_BASELINE=1` instead of `MISTRALRS_OXIDE_INFER=1` to run the
 //! same deterministic request through the default Mistral.rs provider.
 
 use anyhow::{bail, Result};
@@ -22,16 +22,16 @@ const TOP_LOGPROBS: usize = 5;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let loom_enabled = std::env::var("MISTRALRS_LOOM_INFER").as_deref() == Ok("1");
-    let baseline_enabled = std::env::var("LOOM_BASELINE").as_deref() == Ok("1");
-    let validation_mode = match (loom_enabled, baseline_enabled) {
-        (true, false) => "loom",
+    let oxide_enabled = std::env::var("MISTRALRS_OXIDE_INFER").as_deref() == Ok("1");
+    let baseline_enabled = std::env::var("OXIDE_BASELINE").as_deref() == Ok("1");
+    let validation_mode = match (oxide_enabled, baseline_enabled) {
+        (true, false) => "oxide",
         (false, true) => "baseline",
-        _ => bail!("set exactly one of MISTRALRS_LOOM_INFER=1 or LOOM_BASELINE=1"),
+        _ => bail!("set exactly one of MISTRALRS_OXIDE_INFER=1 or OXIDE_BASELINE=1"),
     };
 
     let model_path =
-        std::env::var("LOOM_MODEL_PATH").unwrap_or_else(|_| DEFAULT_MODEL_PATH.to_string());
+        std::env::var("OXIDE_MODEL_PATH").unwrap_or_else(|_| DEFAULT_MODEL_PATH.to_string());
     let device = Device::new_cuda_with_stream(0)?;
     let model = TextModelBuilder::new(model_path)
         .with_dtype(ModelDType::BF16)
@@ -65,11 +65,11 @@ async fn main() -> Result<()> {
         .choices
         .first()
         .ok_or_else(|| anyhow::anyhow!("model returned no choices"))?;
-    let stats = if loom_enabled {
+    let stats = if oxide_enabled {
         let stats = model
-            .loom_paged_decode_stats()
+            .oxide_paged_decode_stats()
             .await?
-            .ok_or_else(|| anyhow::anyhow!("model has no Loom paged-decode runtime"))?;
+            .ok_or_else(|| anyhow::anyhow!("model has no Oxide paged-decode runtime"))?;
         if stats.submitted() == 0
             || stats.completed() != stats.submitted()
             || stats.failed() != 0
@@ -77,7 +77,7 @@ async fn main() -> Result<()> {
             || stats.external_regions() != 9
             || stats.adapter_device_to_device_copies() != 0
         {
-            bail!("Loom provider-hit validation failed: {stats:?}");
+            bail!("Oxide provider-hit validation failed: {stats:?}");
         }
         Some(stats)
     } else {
@@ -98,7 +98,7 @@ async fn main() -> Result<()> {
         serde_json::to_string(&choice.logprobs)?
     );
     if let Some(stats) = stats {
-        println!("loom_provider={stats:?}");
+        println!("oxide_provider={stats:?}");
     }
     Ok(())
 }

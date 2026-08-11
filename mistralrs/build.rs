@@ -2,7 +2,7 @@ use std::{env, ffi::OsStr, path::PathBuf, process::Command};
 
 const COMPUTE_CAP_ENV: &str = "CUDA_COMPUTE_CAP";
 const NVCC_ENV: &str = "NVCC";
-const TEST_BUILD_ENV: &str = "LOOM_GEMM_CENSUS_TEST_BUILD";
+const TEST_BUILD_ENV: &str = "OXIDE_GEMM_CENSUS_TEST_BUILD";
 
 fn command_output(command: &OsStr, args: &[&str], label: &str) -> String {
     let output = Command::new(command)
@@ -109,9 +109,9 @@ fn main() {
             )
         };
 
-    println!("cargo:rustc-env=LOOM_GEMM_CENSUS_BUILD_RUSTC_VERSION={rustc_version}");
-    println!("cargo:rustc-env=LOOM_GEMM_CENSUS_BUILD_NVCC_PATH={nvcc_path}");
-    println!("cargo:rustc-env=LOOM_GEMM_CENSUS_BUILD_NVCC_VERSION_HEX={nvcc_version_hex}");
-    println!("cargo:rustc-env=LOOM_GEMM_CENSUS_BUILD_CUDA_COMPUTE_CAP={compute_cap}");
-    println!("cargo:rustc-env=LOOM_GEMM_CENSUS_BUILD_CUDA_ARCH={cuda_arch}");
+    println!("cargo:rustc-env=OXIDE_GEMM_CENSUS_BUILD_RUSTC_VERSION={rustc_version}");
+    println!("cargo:rustc-env=OXIDE_GEMM_CENSUS_BUILD_NVCC_PATH={nvcc_path}");
+    println!("cargo:rustc-env=OXIDE_GEMM_CENSUS_BUILD_NVCC_VERSION_HEX={nvcc_version_hex}");
+    println!("cargo:rustc-env=OXIDE_GEMM_CENSUS_BUILD_CUDA_COMPUTE_CAP={compute_cap}");
+    println!("cargo:rustc-env=OXIDE_GEMM_CENSUS_BUILD_CUDA_ARCH={cuda_arch}");
 }

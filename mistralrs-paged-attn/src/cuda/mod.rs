@@ -10,5 +10,5 @@ pub use backend::{
     paged_attention, reshape_and_cache, reshape_and_cache_flashinfer, swap_blocks,
     FlashInferDecodeScratch,
 };
-#[cfg(feature = "loom-infer")]
-pub use backend::{LoomPagedDecodeDrainError, LoomPagedDecodeRuntime, LoomPagedDecodeStats};
+#[cfg(feature = "oxide-infer")]
+pub use backend::{OxidePagedDecodeDrainError, OxidePagedDecodeRuntime, OxidePagedDecodeStats};

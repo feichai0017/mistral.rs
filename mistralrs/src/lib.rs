@@ -356,8 +356,8 @@ pub use mistralrs_core::TokenSource;
 pub use mistralrs_core::{IntervalLogger, MistralRs, RequestMessage, ResponseOk};
 
 // ========== Utilities ==========
-#[cfg(all(feature = "loom-infer", target_family = "unix"))]
-pub use mistralrs_core::LoomPagedDecodeStats;
+#[cfg(all(feature = "oxide-infer", target_family = "unix"))]
+pub use mistralrs_core::OxidePagedDecodeStats;
 pub use mistralrs_core::{initialize_logging, paged_attn_supported, parse_isq_value};
 
 // ========== llguidance ==========
