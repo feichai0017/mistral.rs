@@ -193,13 +193,13 @@ name = "paged_attn"
 path = "examples/advanced/paged_attn/main.rs"
 
 [[bin]]
-name = "loom_paged_attn"
-path = "examples/advanced/loom_paged_attn/main.rs"
-required-features = ["loom-infer"]
+name = "oxide_paged_attn"
+path = "examples/advanced/oxide_paged_attn/main.rs"
+required-features = ["oxide-infer"]
 
 [[bin]]
-name = "loom_gemm_census"
-path = "examples/advanced/loom_gemm_census/main.rs"
+name = "oxide_gemm_census"
+path = "examples/advanced/oxide_gemm_census/main.rs"
 required-features = ["gemm-census"]
 
 [[example]]
@@ -287,7 +287,7 @@ no-default-features = true
 gemm-census = ["mistralrs-core/gemm-census", "dep:sha2"]
 # NVIDIA CUDA GPU support
 cuda = ["mistralrs-core/cuda"]
-loom-infer = ["cuda", "mistralrs-core/loom-infer"]
+oxide-infer = ["cuda", "mistralrs-core/oxide-infer"]
 # cuDNN acceleration (requires cuda)
 cudnn = ["mistralrs-core/cudnn"]
 # Apple Metal GPU support (macOS/iOS)

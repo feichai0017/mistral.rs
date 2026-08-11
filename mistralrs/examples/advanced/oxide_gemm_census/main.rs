@@ -21,14 +21,13 @@ use mistralrs::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-const SCHEMA: &str = "loom.gemm-shape-census.v1";
-const LOOM_SCHEMA_COMMIT: &str = "8b971b064d4246b2cd5cbc74f9902a51c720aefa";
+const SCHEMA: &str = "oxide.gemm-shape-census.v1";
 const RUST_TOOLCHAIN: &str = "+nightly-2026-04-03";
-const BUILD_RUSTC_VERSION: &str = env!("LOOM_GEMM_CENSUS_BUILD_RUSTC_VERSION");
-const BUILD_NVCC_PATH: &str = env!("LOOM_GEMM_CENSUS_BUILD_NVCC_PATH");
-const BUILD_NVCC_VERSION_HEX: &str = env!("LOOM_GEMM_CENSUS_BUILD_NVCC_VERSION_HEX");
-const BUILD_CUDA_COMPUTE_CAP: &str = env!("LOOM_GEMM_CENSUS_BUILD_CUDA_COMPUTE_CAP");
-const BUILD_CUDA_ARCH: &str = env!("LOOM_GEMM_CENSUS_BUILD_CUDA_ARCH");
+const BUILD_RUSTC_VERSION: &str = env!("OXIDE_GEMM_CENSUS_BUILD_RUSTC_VERSION");
+const BUILD_NVCC_PATH: &str = env!("OXIDE_GEMM_CENSUS_BUILD_NVCC_PATH");
+const BUILD_NVCC_VERSION_HEX: &str = env!("OXIDE_GEMM_CENSUS_BUILD_NVCC_VERSION_HEX");
+const BUILD_CUDA_COMPUTE_CAP: &str = env!("OXIDE_GEMM_CENSUS_BUILD_CUDA_COMPUTE_CAP");
+const BUILD_CUDA_ARCH: &str = env!("OXIDE_GEMM_CENSUS_BUILD_CUDA_ARCH");
 const MODEL_NAME: &str = "Qwen2.5-1.5B-Instruct";
 const PROMPT: &str = "Reply with one short sentence that explains what a CUDA kernel does.";
 const MAX_OUTPUT_TOKENS: usize = 8;
@@ -74,7 +73,7 @@ struct Source {
     worktree_clean: bool,
     cargo_lock_sha256: String,
     binary_sha256: String,
-    loom_schema_commit: &'static str,
+    oxide_schema_commit: String,
 }
 
 #[derive(Serialize)]
@@ -215,7 +214,7 @@ fn parse_env_flag(value: &str) -> bool {
 
 fn require_cuda_feature() -> Result<()> {
     #[cfg(not(feature = "cuda"))]
-    bail!("loom_gemm_census must be built with the cuda feature");
+    bail!("oxide_gemm_census must be built with the cuda feature");
     #[cfg(feature = "cuda")]
     Ok(())
 }
@@ -233,13 +232,13 @@ fn required_hex_env(name: &str, length: usize) -> Result<String> {
 }
 
 fn required_remote_env() -> Result<String> {
-    let remote = required_env("LOOM_GEMM_CENSUS_REMOTE")?;
+    let remote = required_env("OXIDE_GEMM_CENSUS_REMOTE")?;
     if remote.starts_with('-')
         || !remote
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
     {
-        bail!("LOOM_GEMM_CENSUS_REMOTE is not a valid Git remote name");
+        bail!("OXIDE_GEMM_CENSUS_REMOTE is not a valid Git remote name");
     }
     Ok(remote)
 }
@@ -342,17 +341,17 @@ fn capture_source_snapshot() -> Result<SourceSnapshot> {
         .ok_or_else(|| anyhow::anyhow!("mistralrs package has no workspace parent"))?
         .canonicalize()
         .context("failed to resolve the source root")?;
-    let expected_commit = required_hex_env("LOOM_GEMM_CENSUS_SOURCE_COMMIT", 40)?;
+    let expected_commit = required_hex_env("OXIDE_GEMM_CENSUS_SOURCE_COMMIT", 40)?;
     let commit = git_output(&root, &["rev-parse", "HEAD"])?;
     if commit != expected_commit {
-        bail!("LOOM_GEMM_CENSUS_SOURCE_COMMIT is {expected_commit}, but HEAD is {commit}");
+        bail!("OXIDE_GEMM_CENSUS_SOURCE_COMMIT is {expected_commit}, but HEAD is {commit}");
     }
     let remote = required_remote_env()?;
-    let expected_repository = required_env("LOOM_GEMM_CENSUS_REPOSITORY")?;
+    let expected_repository = required_env("OXIDE_GEMM_CENSUS_REPOSITORY")?;
     let repository = git_output(&root, &["remote", "get-url", &remote])?;
     if repository != expected_repository {
         bail!(
-            "LOOM_GEMM_CENSUS_REPOSITORY is {expected_repository:?}, but {remote} is {repository:?}"
+            "OXIDE_GEMM_CENSUS_REPOSITORY is {expected_repository:?}, but {remote} is {repository:?}"
         );
     }
     assert_clean_worktree(&root)?;
@@ -412,17 +411,17 @@ fn capture_model_snapshot(model_path: &Path) -> Result<ModelSnapshot> {
     let snapshot = hash_model_snapshot(model_path)?;
     for (name, path, actual) in [
         (
-            "LOOM_GEMM_CENSUS_WEIGHTS_SHA256",
+            "OXIDE_GEMM_CENSUS_WEIGHTS_SHA256",
             model_path.join("model.safetensors"),
             snapshot.weights_sha256.as_str(),
         ),
         (
-            "LOOM_GEMM_CENSUS_CONFIG_SHA256",
+            "OXIDE_GEMM_CENSUS_CONFIG_SHA256",
             model_path.join("config.json"),
             snapshot.config_sha256.as_str(),
         ),
         (
-            "LOOM_GEMM_CENSUS_TOKENIZER_SHA256",
+            "OXIDE_GEMM_CENSUS_TOKENIZER_SHA256",
             model_path.join("tokenizer.json"),
             snapshot.tokenizer_sha256.as_str(),
         ),
@@ -458,9 +457,9 @@ fn capture_hardware() -> Result<(Hardware, String)> {
         bail!("nvidia-smi returned an unexpected GPU record");
     }
     for (name, actual) in [
-        ("LOOM_GEMM_CENSUS_GPU", fields[0]),
-        ("LOOM_GEMM_CENSUS_COMPUTE_CAPABILITY", fields[1]),
-        ("LOOM_GEMM_CENSUS_DRIVER_VERSION", fields[2]),
+        ("OXIDE_GEMM_CENSUS_GPU", fields[0]),
+        ("OXIDE_GEMM_CENSUS_COMPUTE_CAPABILITY", fields[1]),
+        ("OXIDE_GEMM_CENSUS_DRIVER_VERSION", fields[2]),
     ] {
         let expected = required_env(name)?;
         if actual != expected {
@@ -468,7 +467,7 @@ fn capture_hardware() -> Result<(Hardware, String)> {
         }
     }
     if fields[0] != "NVIDIA H20" || fields[1] != "9.0" {
-        bail!("loom_gemm_census admits NVIDIA H20 compute capability 9.0 only");
+        bail!("oxide_gemm_census admits NVIDIA H20 compute capability 9.0 only");
     }
     Ok((
         Hardware {
@@ -624,10 +623,10 @@ fn validate_entries(entries: &[GemmCensusEntry], decode_forward_steps: usize) ->
 }
 
 fn output_path(source_root: &Path) -> Result<PathBuf> {
-    let raw = PathBuf::from(required_env("LOOM_GEMM_CENSUS_OUTPUT")?);
+    let raw = PathBuf::from(required_env("OXIDE_GEMM_CENSUS_OUTPUT")?);
     let file_name = raw
         .file_name()
-        .ok_or_else(|| anyhow::anyhow!("LOOM_GEMM_CENSUS_OUTPUT must name a file"))?;
+        .ok_or_else(|| anyhow::anyhow!("OXIDE_GEMM_CENSUS_OUTPUT must name a file"))?;
     let parent = raw
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -636,10 +635,10 @@ fn output_path(source_root: &Path) -> Result<PathBuf> {
         .context("failed to resolve the census output parent")?;
     let path = parent.join(file_name);
     if path.starts_with(source_root) {
-        bail!("LOOM_GEMM_CENSUS_OUTPUT must be outside the source worktree");
+        bail!("OXIDE_GEMM_CENSUS_OUTPUT must be outside the source worktree");
     }
     if path.try_exists()? {
-        bail!("LOOM_GEMM_CENSUS_OUTPUT already exists");
+        bail!("OXIDE_GEMM_CENSUS_OUTPUT already exists");
     }
     Ok(path)
 }
@@ -648,7 +647,7 @@ fn create_temp_output(parent: &Path) -> Result<(File, TempOutput)> {
     for _ in 0..TEMP_CREATE_ATTEMPTS {
         let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = parent.join(format!(
-            ".loom-gemm-census.{}.{counter}.tmp",
+            ".oxide-gemm-census.{}.{counter}.tmp",
             std::process::id()
         ));
         match OpenOptions::new().write(true).create_new(true).open(&path) {
@@ -694,21 +693,22 @@ fn write_record(path: &Path, record: &CensusRecord) -> Result<()> {
 async fn main() -> Result<()> {
     require_cuda_feature()?;
     required_exact_env("MISTRALRS_CUDA_GRAPHS", "0")?;
-    if env_flag_enabled("MISTRALRS_LOOM_INFER") {
-        bail!("loom_gemm_census requires the Mistral.rs baseline provider");
+    if env_flag_enabled("MISTRALRS_OXIDE_INFER") {
+        bail!("oxide_gemm_census requires the Mistral.rs baseline provider");
     }
+    let oxide_schema_commit = required_hex_env("OXIDE_GEMM_CENSUS_SCHEMA_COMMIT", 40)?;
     let source_snapshot = capture_source_snapshot()?;
     let (hardware, driver_version) = capture_hardware()?;
     let environment = capture_environment(driver_version)?;
     let output_path = output_path(&source_snapshot.root)?;
-    let model_path = PathBuf::from(required_env("LOOM_MODEL_PATH")?)
+    let model_path = PathBuf::from(required_env("OXIDE_MODEL_PATH")?)
         .canonicalize()
-        .context("failed to resolve LOOM_MODEL_PATH")?;
+        .context("failed to resolve OXIDE_MODEL_PATH")?;
     if !model_path.is_dir() {
-        bail!("LOOM_MODEL_PATH must be a directory");
+        bail!("OXIDE_MODEL_PATH must be a directory");
     }
     let model_snapshot = capture_model_snapshot(&model_path)?;
-    let run_id = required_env("LOOM_GEMM_CENSUS_RUN_ID")?;
+    let run_id = required_env("OXIDE_GEMM_CENSUS_RUN_ID")?;
 
     let canonical_request = canonical_request();
     let canonical_request_json = serde_json::to_vec(&canonical_request)?;
@@ -717,7 +717,7 @@ async fn main() -> Result<()> {
     let model = TextModelBuilder::new(
         model_path
             .to_str()
-            .ok_or_else(|| anyhow::anyhow!("LOOM_MODEL_PATH is not UTF-8"))?,
+            .ok_or_else(|| anyhow::anyhow!("OXIDE_MODEL_PATH is not UTF-8"))?,
     )
     .with_dtype(ModelDType::BF16)
     .with_device(device)
@@ -766,13 +766,13 @@ async fn main() -> Result<()> {
         schema: SCHEMA,
         run_id,
         source: Source {
-            producer: "mistralrs/loom_gemm_census",
+            producer: "mistralrs/oxide_gemm_census",
             repository: source_snapshot.repository,
             commit: source_snapshot.commit,
             worktree_clean: true,
             cargo_lock_sha256: source_snapshot.cargo_lock_sha256,
             binary_sha256: source_snapshot.binary_sha256,
-            loom_schema_commit: LOOM_SCHEMA_COMMIT,
+            oxide_schema_commit,
         },
         hardware,
         environment,
@@ -823,7 +823,7 @@ mod tests {
     fn test_dir(label: &str) -> PathBuf {
         let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "loom-gemm-census-test-{}-{label}-{counter}",
+            "oxide-gemm-census-test-{}-{label}-{counter}",
             std::process::id()
         ));
         fs::create_dir(&path).unwrap();
@@ -913,7 +913,7 @@ mod tests {
     }
 
     #[test]
-    fn loom_provider_flag_accepts_all_enabled_spellings() {
+    fn oxide_provider_flag_accepts_all_enabled_spellings() {
         for value in ["1", "true", "TRUE", "yes", "YES", "on", "ON"] {
             assert!(parse_env_flag(value));
         }

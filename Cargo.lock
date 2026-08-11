@@ -3502,14 +3502,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "loom-infer"
+name = "oxide-infer"
 version = "1.0.0-alpha.1"
 dependencies = [
  "half",
 ]
 
 [[package]]
-name = "loom-infer-cuda"
+name = "oxide-infer-cuda"
 version = "1.0.0-alpha.1"
 dependencies = [
  "cuda-core 0.2.1",
@@ -3517,7 +3517,7 @@ dependencies = [
  "cuda-host",
  "cudarc 0.19.8",
  "half",
- "loom-infer",
+ "oxide-infer",
  "thiserror 2.0.18",
 ]
 
@@ -4079,8 +4079,8 @@ dependencies = [
  "dispatch2",
  "float8",
  "half",
- "loom-infer",
- "loom-infer-cuda",
+ "oxide-infer",
+ "oxide-infer-cuda",
  "mistralrs-metal-compile",
  "objc2-foundation",
  "objc2-metal",

@@ -773,7 +773,7 @@ pub(crate) fn cuda_decode_graph_supported_for_model(
     {
         (0..metadata.num_layers()).all(|layer_idx| {
             let backend = metadata.attention_backend_kind_for_layer(layer_idx);
-            backend != AttentionBackendKind::Loom
+            backend != AttentionBackendKind::Oxide
                 && !DecodePlan::requires_host_context_lengths(
                     backend,
                     metadata.k_head_dim_for_layer(layer_idx),
@@ -785,7 +785,7 @@ pub(crate) fn cuda_decode_graph_supported_for_model(
         (0..metadata.num_layers()).all(|layer_idx| {
             !matches!(
                 metadata.attention_backend_kind_for_layer(layer_idx),
-                AttentionBackendKind::FlashInfer | AttentionBackendKind::Loom
+                AttentionBackendKind::FlashInfer | AttentionBackendKind::Oxide
             )
         })
     }

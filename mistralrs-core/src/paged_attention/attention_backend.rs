@@ -2,7 +2,7 @@
 pub enum AttentionBackendKind {
     Standard,
     FlashInfer,
-    Loom,
+    Oxide,
 }
 
 #[derive(Clone, Copy, Debug)]
