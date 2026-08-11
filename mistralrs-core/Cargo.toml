@@ -119,6 +119,7 @@ candle-metal-kernels = { workspace = true, optional = true }
 
 [features]
 pyo3_macros = ["pyo3", "mistralrs-mcp/pyo3_macros"]
+gemm-census = ["mistralrs-quant/gemm-census"]
 cuda = [
     "candle-core/cuda",
     "candle-nn/cuda",

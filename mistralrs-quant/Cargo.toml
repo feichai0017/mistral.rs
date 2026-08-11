@@ -50,6 +50,7 @@ cuda-bindings = { workspace = true, optional = true }
 mistralrs-metal-compile = { workspace = true, optional = true, features = ["metal"] }
 
 [features]
+gemm-census = []
 cuda = [
     "candle-core/cuda",
     "candle-nn/cuda",

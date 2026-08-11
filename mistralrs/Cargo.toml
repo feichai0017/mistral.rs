@@ -23,6 +23,7 @@ candle-core.workspace = true
 candle-nn.workspace = true
 serde_json.workspace = true
 serde.workspace = true
+sha2 = { workspace = true, optional = true }
 schemars.workspace = true
 image.workspace = true
 indexmap.workspace = true
@@ -196,6 +197,11 @@ name = "loom_paged_attn"
 path = "examples/advanced/loom_paged_attn/main.rs"
 required-features = ["loom-infer"]
 
+[[bin]]
+name = "loom_gemm_census"
+path = "examples/advanced/loom_gemm_census/main.rs"
+required-features = ["gemm-census"]
+
 [[example]]
 name = "auto_device_map"
 path = "examples/advanced/auto_device_map/main.rs"
@@ -278,6 +284,7 @@ path = "examples/cookbook/agent/main.rs"
 no-default-features = true
 
 [features]
+gemm-census = ["mistralrs-core/gemm-census", "dep:sha2"]
 # NVIDIA CUDA GPU support
 cuda = ["mistralrs-core/cuda"]
 loom-infer = ["cuda", "mistralrs-core/loom-infer"]

@@ -336,6 +336,20 @@ struct DecoderLayer {
     post_attention_layernorm: RmsNorm,
 }
 
+#[cfg(feature = "gemm-census")]
+fn gemm_census_phase(
+    batch_kind: crate::pipeline::RecurrentBatchKind,
+) -> mistralrs_quant::gemm_census::GemmCensusPhase {
+    match batch_kind {
+        crate::pipeline::RecurrentBatchKind::Prefill => {
+            mistralrs_quant::gemm_census::GemmCensusPhase::Prefill
+        }
+        crate::pipeline::RecurrentBatchKind::Decode => {
+            mistralrs_quant::gemm_census::GemmCensusPhase::Decode
+        }
+    }
+}
+
 impl DecoderLayer {
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -570,6 +584,10 @@ impl Model {
         mut xs: Tensor,
         ctx: &mut ModelForwardContext<'_>,
     ) -> Result<Tensor> {
+        #[cfg(feature = "gemm-census")]
+        let census_phase = gemm_census_phase(ctx.recurrent_batch_kind().ok_or_else(|| {
+            candle_core::Error::msg("Qwen2 GEMM census requires explicit recurrent batch kind")
+        })?);
         let cache = &mut self.cache.normal().0;
         let mask_cache = ctx.mask_cache(cache);
         let attention_mask = CausalMasker.make_causal_mask(
@@ -601,19 +619,44 @@ impl Model {
         let sliding_attention_mask = DeviceMappedMask::new(sliding_attention_mask, &*self.mapper)?;
         for (i, layer) in self.layers.iter().enumerate() {
             xs = self.mapper.map(xs, i)?;
-            xs = layer.forward(
-                &xs,
-                &attention_mask.get(xs.device()),
-                &sliding_attention_mask.get(xs.device()),
-                &mut cache[i],
-                ctx,
-                i,
-            )?
+            #[cfg(feature = "gemm-census")]
+            {
+                xs = mistralrs_quant::gemm_census::with_qwen2_layer_scope(census_phase, i, || {
+                    layer.forward(
+                        &xs,
+                        &attention_mask.get(xs.device()),
+                        &sliding_attention_mask.get(xs.device()),
+                        &mut cache[i],
+                        ctx,
+                        i,
+                    )
+                })?;
+            }
+            #[cfg(not(feature = "gemm-census"))]
+            {
+                xs = layer.forward(
+                    &xs,
+                    &attention_mask.get(xs.device()),
+                    &sliding_attention_mask.get(xs.device()),
+                    &mut cache[i],
+                    ctx,
+                    i,
+                )?;
+            }
         }
         let xs = xs.to_device(&self.device)?;
         let xs = xs.apply(&self.norm)?;
         let xs = ctx.logits(&xs)?;
-        self.lm_head.forward(&xs)
+        #[cfg(feature = "gemm-census")]
+        {
+            mistralrs_quant::gemm_census::with_qwen2_lm_head_scope(census_phase, || {
+                self.lm_head.forward(&xs)
+            })
+        }
+        #[cfg(not(feature = "gemm-census"))]
+        {
+            self.lm_head.forward(&xs)
+        }
     }
 
     pub fn embed_dtype(&self) -> DType {
@@ -881,5 +924,20 @@ mod tests {
             &types[2],
             NormalCacheType::Normal { max_seq_len: 4096 }
         ));
+    }
+
+    #[cfg(feature = "gemm-census")]
+    #[test]
+    fn gemm_census_phase_uses_recurrent_batch_kind() {
+        use mistralrs_quant::gemm_census::GemmCensusPhase;
+
+        assert_eq!(
+            gemm_census_phase(crate::pipeline::RecurrentBatchKind::Prefill),
+            GemmCensusPhase::Prefill
+        );
+        assert_eq!(
+            gemm_census_phase(crate::pipeline::RecurrentBatchKind::Decode),
+            GemmCensusPhase::Decode
+        );
     }
 }

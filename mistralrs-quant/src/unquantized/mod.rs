@@ -35,7 +35,71 @@ fn supports_cublaslt_batch_matmul(a: &Tensor, w: &Tensor) -> bool {
     has_cublaslt_batch_layout(a) && has_cublaslt_batch_layout(w)
 }
 
+#[cfg(feature = "gemm-census")]
+macro_rules! prepare_dense_linear_census {
+    ($pending:ident, $linear:expr, $activation:expr) => {
+        let $pending =
+            crate::gemm_census::prepare_linear($activation, &$linear.w, $linear.b.is_some())?;
+    };
+}
+
+#[cfg(not(feature = "gemm-census"))]
+macro_rules! prepare_dense_linear_census {
+    ($pending:ident, $linear:expr, $activation:expr) => {};
+}
+
+#[cfg(feature = "gemm-census")]
+macro_rules! complete_dense_linear {
+    ($linear:expr, $path:ident, $pending:ident, $output:expr $(,)?) => {
+        $linear.complete_forward(DenseLinearPath::$path, $output, $pending)
+    };
+}
+
+#[cfg(not(feature = "gemm-census"))]
+macro_rules! complete_dense_linear {
+    ($linear:expr, $path:ident, $pending:ident, $output:expr $(,)?) => {
+        $output
+    };
+}
+
+#[cfg(feature = "gemm-census")]
+#[derive(Clone, Copy)]
+enum DenseLinearPath {
+    #[cfg(feature = "cuda")]
+    MistralCudaGemv,
+    CandleCudaFlattened,
+    CublasltBatch,
+    Candle,
+}
+
 impl UnquantLinear {
+    #[cfg(feature = "gemm-census")]
+    fn complete_forward(
+        &self,
+        path: DenseLinearPath,
+        output: Result<Tensor>,
+        pending_census: Option<crate::gemm_census::PendingGemmCensus>,
+    ) -> Result<Tensor> {
+        let output = output?;
+        let observed_path = match path {
+            #[cfg(feature = "cuda")]
+            DenseLinearPath::MistralCudaGemv => {
+                crate::gemm_census::GemmCensusObservedPath::MistralCudaGemv
+            }
+            DenseLinearPath::CandleCudaFlattened => {
+                crate::gemm_census::GemmCensusObservedPath::CandleCudaFlattenedMatmul
+            }
+            DenseLinearPath::Candle => crate::gemm_census::GemmCensusObservedPath::CandleMatmul,
+            DenseLinearPath::CublasltBatch => {
+                candle_core::bail!("GEMM census does not admit the cuBLASLt batch matmul route")
+            }
+        };
+        if let Some(pending_census) = pending_census {
+            pending_census.commit(observed_path)?;
+        }
+        Ok(output)
+    }
+
     fn forward_cuda_gemm(&self, input: &Tensor) -> Result<Tensor> {
         let input_dim = input.dim(D::Minus1)?;
         let output_dim = self.w.dim(0)?;
@@ -108,19 +172,31 @@ impl QuantMethod for UnquantLinear {
     }
 
     fn forward_raw(&self, a: &Tensor) -> Result<Tensor> {
+        prepare_dense_linear_census!(pending_census, self, a);
+
         // Batch matrix multiplication
         maybe_init_cublas_lt_wrapper(a.device().clone());
 
         // Try custom GEMV for single-token decode (batch_size=1)
         #[cfg(feature = "cuda")]
         if crate::gemv::should_use_gemv(a, &self.w) {
-            return crate::gemv::gemv(a, &self.w, self.b.as_ref());
+            return complete_dense_linear!(
+                self,
+                MistralCudaGemv,
+                pending_census,
+                crate::gemv::gemv(a, &self.w, self.b.as_ref()),
+            );
         }
 
         self.stats.process(a)?;
 
         if a.device().is_cuda() && a.rank() > 2 {
-            return self.forward_cuda_gemm(a);
+            return complete_dense_linear!(
+                self,
+                CandleCudaFlattened,
+                pending_census,
+                self.forward_cuda_gemm(a),
+            );
         }
 
         let w = match *a.dims() {
@@ -143,25 +219,40 @@ impl QuantMethod for UnquantLinear {
                         None
                     };
                     if let Some(cublaslt) = cublaslt {
-                        cublaslt
-                            .batch_matmul(
-                                a,
-                                &w,
-                                Some(&b.t()?.contiguous()?),
-                                None,
-                                Some(1.0),
-                                None,
-                                None,
-                            )?
-                            .t()
+                        complete_dense_linear!(
+                            self,
+                            CublasltBatch,
+                            pending_census,
+                            cublaslt
+                                .batch_matmul(
+                                    a,
+                                    &w,
+                                    Some(&b.t()?.contiguous()?),
+                                    None,
+                                    Some(1.0),
+                                    None,
+                                    None,
+                                )?
+                                .t(),
+                        )
                     } else {
                         let matmul_result = a.matmul(&w.t()?)?;
-                        matmul_result.broadcast_add(&b)
+                        complete_dense_linear!(
+                            self,
+                            Candle,
+                            pending_census,
+                            matmul_result.broadcast_add(&b),
+                        )
                     }
                 }
                 DeviceLocation::Metal { .. } => {
                     let matmul_result = a.matmul(&w.t()?)?;
-                    matmul_result.broadcast_add(&b)
+                    complete_dense_linear!(
+                        self,
+                        Candle,
+                        pending_census,
+                        matmul_result.broadcast_add(&b),
+                    )
                 }
                 DeviceLocation::Cpu => {
                     #[cfg(feature = "accelerate")]
@@ -171,14 +262,24 @@ impl QuantMethod for UnquantLinear {
                         let w_f32 = w.t()?.to_dtype(DType::F32)?;
                         let b_f32 = b.to_dtype(DType::F32)?;
                         let matmul_result = a_f32.matmul(&w_f32)?;
-                        matmul_result
-                            .broadcast_add(&b_f32)?
-                            .to_dtype(original_dtype)
+                        complete_dense_linear!(
+                            self,
+                            Candle,
+                            pending_census,
+                            matmul_result
+                                .broadcast_add(&b_f32)?
+                                .to_dtype(original_dtype),
+                        )
                     }
                     #[cfg(not(feature = "accelerate"))]
                     {
                         let matmul_result = a.matmul(&w.t()?)?;
-                        matmul_result.broadcast_add(&b)
+                        complete_dense_linear!(
+                            self,
+                            Candle,
+                            pending_census,
+                            matmul_result.broadcast_add(&b),
+                        )
                     }
                 }
             }
@@ -191,25 +292,37 @@ impl QuantMethod for UnquantLinear {
                         None
                     };
                     if let Some(cublaslt) = cublaslt {
-                        cublaslt
-                            .batch_matmul(a, &w, None, None, None, None, None)?
-                            .t()
+                        complete_dense_linear!(
+                            self,
+                            CublasltBatch,
+                            pending_census,
+                            cublaslt
+                                .batch_matmul(a, &w, None, None, None, None, None)?
+                                .t(),
+                        )
                     } else {
-                        a.matmul(&w.t()?)
+                        complete_dense_linear!(self, Candle, pending_census, a.matmul(&w.t()?),)
                     }
                 }
-                DeviceLocation::Metal { .. } => a.matmul(&w.t()?),
+                DeviceLocation::Metal { .. } => {
+                    complete_dense_linear!(self, Candle, pending_census, a.matmul(&w.t()?),)
+                }
                 DeviceLocation::Cpu => {
                     #[cfg(feature = "accelerate")]
                     {
                         let original_dtype = a.dtype();
-                        a.to_dtype(DType::F32)?
-                            .matmul(&w.t()?.to_dtype(DType::F32)?)?
-                            .to_dtype(original_dtype)
+                        complete_dense_linear!(
+                            self,
+                            Candle,
+                            pending_census,
+                            a.to_dtype(DType::F32)?
+                                .matmul(&w.t()?.to_dtype(DType::F32)?)?
+                                .to_dtype(original_dtype),
+                        )
                     }
                     #[cfg(not(feature = "accelerate"))]
                     {
-                        a.matmul(&w.t()?)
+                        complete_dense_linear!(self, Candle, pending_census, a.matmul(&w.t()?),)
                     }
                 }
             }
@@ -640,6 +753,41 @@ impl QuantizedSerde for UnquantLinear {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "gemm-census")]
+    #[test]
+    fn gemm_census_hook_records_successful_candle_matmul() -> Result<()> {
+        use crate::gemm_census::{
+            begin_gemm_census_run, with_qwen2_lm_head_scope, GemmCensusDeviceKind,
+            GemmCensusObservedPath, GemmCensusPhase, GEMM_CENSUS_TEST_LOCK,
+        };
+
+        let _test = GEMM_CENSUS_TEST_LOCK.lock().unwrap();
+        let mut run = begin_gemm_census_run()?;
+        let input = Tensor::zeros((2, 4), DType::F32, &Device::Cpu)?;
+        let weight = Tensor::zeros((3, 4), DType::F32, &Device::Cpu)?;
+        let bias = Tensor::zeros(3, DType::F32, &Device::Cpu)?;
+        let layer = <UnquantLinear as QuantMethod>::new(QuantMethodConfig::Unquantized(
+            Linear::new(weight, Some(bias)),
+        ))?;
+
+        let output =
+            with_qwen2_lm_head_scope(GemmCensusPhase::Prefill, || layer.forward_raw(&input))?;
+
+        assert_eq!(output.dims(), &[2, 3]);
+        let entries = run.finish()?;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].observed_path,
+            GemmCensusObservedPath::CandleMatmul
+        );
+        assert_eq!(entries[0].post_ops, ["bias"]);
+        assert_eq!(entries[0].device_kind, GemmCensusDeviceKind::Cpu);
+        assert_eq!(entries[0].device_ordinal, 0);
+        assert_eq!(entries[0].a_offset_elements, 0);
+        assert_eq!(entries[0].weight_offset_elements, 0);
+        Ok(())
+    }
 
     fn test_layer(device: &Device) -> Result<UnquantLinear> {
         let weight = Tensor::from_vec(

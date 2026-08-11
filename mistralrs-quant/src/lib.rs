@@ -29,6 +29,8 @@ pub mod distributed;
 mod dummy;
 pub mod f8q8;
 mod fp8;
+#[cfg(feature = "gemm-census")]
+pub mod gemm_census;
 pub mod gemv;
 mod gguf;
 mod gptq;

@@ -9,6 +9,8 @@ pub use engine::{
 };
 use hf_hub::Cache;
 pub use lora::Ordering;
+#[cfg(feature = "gemm-census")]
+pub use mistralrs_quant::gemm_census;
 pub use pipeline::CalibrationStatus;
 pub use pipeline::ModelCategory;
 pub use pipeline::Pipeline;
