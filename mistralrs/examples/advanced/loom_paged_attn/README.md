@@ -55,6 +55,14 @@ cargo +nightly-2026-04-03 oxide run --bin loom_paged_attn \
 For Qwen2.5-1.5B-Instruct, the default provider is Mistral.rs standard paged
 attention because its GQA group size is 6.
 
+Run the adapter recovery gate from the paged-attention crate:
+
+```bash
+cd mistralrs-paged-attn
+cargo +nightly-2026-04-03 oxide run --bin loom_adapter_h20 \
+  --features loom-infer --arch sm_90
+```
+
 ## H20 result
 
 The 2026-08-11 run used an NVIDIA H20, CUDA 13.1, cuda-oxide `868f8ec`, Loom
@@ -81,6 +89,19 @@ equivalence or a performance advantage.
 See [the machine-readable H20 record](./h20-smoke-20260811.json) for source
 hashes, raw selected-token log-probabilities, and command outcomes.
 
+### Adapter recovery gate
+
+The H20 adapter recovery gate queued three valid commands and one
+device-rejected invalid CSR command. The first drain settled all four commands
+and returned `PageIndexOutOfRange` at FIFO position 2.
+
+Each valid output matched the CPU oracle. A fifth valid command then completed
+on the same runtime. See
+[the adapter recovery record](./h20-adapter-recovery-20260811.json) for the
+source hashes and command output.
+
+### Provider boundary
+
 Only decode attention uses Loom. Prefill and KV cache writes keep their existing
 Mistral.rs implementations.
 
@@ -89,11 +110,10 @@ Mistral.rs implementations.
 Before this provider becomes a general engine option:
 
 - Carry a typed, linear runner authority through the model forward path.
-- replace the process-global runtime and completion queue with model-owned
+- Replace the process-global runtime and completion queue with model-owned
   state.
 - Prevent raw forward calls from bypassing completion drain.
 - Model HND cache writes with explicit read-write storage guards.
-- Test adapter-level invalid metadata, FIFO drain, and same-runtime recovery.
 - Replace the sibling path dependency with an immutable published source.
 - Qualify Graph, speculative decode, tensor parallelism, multiple GPUs,
   multiple streams, multiple models, and larger batches.

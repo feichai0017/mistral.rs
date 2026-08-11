@@ -1,0 +1,111 @@
+{
+  "schema": "mistralrs.loom-adapter-recovery.v1",
+  "date": "2026-08-11",
+  "scope": "isolated single-GPU single-ordinary-stream adapter recovery gate",
+  "source": {
+    "mistral_rs_base_commit": "8010b6a0578e416120b590ed72fd46ed5f24ee85",
+    "mistral_rs_result_commit": "805dc8f1f5aa80c2d37460d18779290071889a88",
+    "run_source_matches_result_commit": true,
+    "run_snapshot_has_git_metadata": false,
+    "loom_infer_commit": "d27b6e5825755a811cc413be3fa05109cf10abd8",
+    "cuda_oxide_commit": "868f8ec4ef900bae7e67e7f9508b2da66eee5472",
+    "cargo_oxide_version": "0.2.1",
+    "sha256": {
+      "mistralrs-core/src/pipeline/mod.rs": "91322169b7b1fae813c494d6678698abffeea9aac654e7aa54b6151c0da843d4",
+      "mistralrs-paged-attn/Cargo.toml": "fc795edebc8ceef198dd0c6510ac845ebad0a765bb94277201b9949a5cd7b016",
+      "mistralrs-paged-attn/src/bin/loom_adapter_h20.rs": "ff8cd8668ddfb1539493cd6d06fce1744665203d679c6902987e868f57b2559f",
+      "mistralrs-paged-attn/src/cuda/backend/loom.rs": "5e95134a883c5909ebf7f5a121269f1fa5eb6bb1f01a6065d9f82e8a184bd35b",
+      "mistralrs-paged-attn/src/cuda/backend/mod.rs": "e12271d9de240ca9ddc2571716338fc5a334911f2cc3fce5498a9c6ea79c2026",
+      "mistralrs-paged-attn/src/cuda/mod.rs": "57ce2973a26e3cc372b81b289d23eb5f10c4c073bf1e3f8eb868a595c29c3555"
+    }
+  },
+  "hardware": {
+    "gpu": "NVIDIA H20",
+    "compute_capability": "9.0",
+    "driver": "535.161.08",
+    "cuda_toolkit": "13.1",
+    "rustc": "1.96.0-nightly (55e86c996 2026-04-02)"
+  },
+  "execution_environment": {
+    "host_alias": "forge1",
+    "working_directory": "/workspace/loom-adapter-gate.1otvbS/mistral.rs",
+    "cargo_home": "/workspace/mistral-loom-adapter.7cSCXf/cargo-home",
+    "cargo_net_offline": true,
+    "cuda_oxide_backend": "/workspace/.trash/loom-current-h20.FuIau3-20260810-final/backend-target/release/librustc_codegen_cuda.so"
+  },
+  "contract": {
+    "dtype": "BF16",
+    "batch_size": 2,
+    "max_num_pages": 4,
+    "query_heads": 12,
+    "kv_heads": 2,
+    "gqa_group_size": 6,
+    "head_dim": 128,
+    "page_size": 16,
+    "kv_layout": "HND",
+    "logical_page_count": 4
+  },
+  "sequence": [
+    "valid",
+    "invalid_page_index",
+    "valid",
+    "valid",
+    "drain",
+    "valid_same_runtime",
+    "drain"
+  ],
+  "result": {
+    "exit_code": 0,
+    "submitted_delta": 5,
+    "completed_delta": 5,
+    "failed_delta": 1,
+    "typed_error": {
+      "completion_failure_kind": "DeviceRejected",
+      "kind": "PageIndexOutOfRange",
+      "fifo_position": 2,
+      "index_position": 1,
+      "index": 4,
+      "max_num_pages": 4
+    },
+    "first_drain_settled": 4,
+    "reuse_drain_settled": 1,
+    "final_drain_settled": 0,
+    "same_runtime_reuse": true,
+    "last_operator": "Bf16PagedBatchDecode",
+    "last_layout": "HND",
+    "last_algorithm": "PagedBatchDecodeTokenParallel8",
+    "adapter_zero_copy": true,
+    "external_regions": 9,
+    "adapter_device_to_device_copies": 0,
+    "valid_output_max_abs": {
+      "before_error": 0.0,
+      "after_error": 0.0,
+      "fifo_tail": 0.0,
+      "reuse": 0.0
+    }
+  },
+  "checks": [
+    {
+      "name": "CUDA adapter gate Clippy",
+      "command": "cargo +nightly-2026-04-03 clippy -p mistralrs-paged-attn --bin loom_adapter_h20 --features loom-infer -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "name": "H20 adapter recovery gate",
+      "command": "cd mistralrs-paged-attn && cargo +nightly-2026-04-03 oxide run --bin loom_adapter_h20 --features loom-infer --arch sm_90",
+      "exit_code": 0
+    }
+  ],
+  "not_qualified": [
+    "performance",
+    "general production safety",
+    "bridge, execution, and CUDA-context failure recovery",
+    "CUDA Graph execution",
+    "speculative decode",
+    "tensor parallelism",
+    "multiple GPUs",
+    "multiple CUDA streams",
+    "multiple concurrent models",
+    "general batching"
+  ]
+}
