@@ -58,8 +58,8 @@ impl PagedAttentionRuntime<'_> {
 }
 
 #[cfg(all(feature = "loom-infer", target_family = "unix"))]
-impl PagedAttentionRuntime<'_> {
-    pub(crate) fn require_loom(self) -> candle_core::Result<&LoomPagedDecodeRuntime> {
+impl<'a> PagedAttentionRuntime<'a> {
+    pub(crate) fn require_loom(self) -> candle_core::Result<&'a LoomPagedDecodeRuntime> {
         match self {
             Self::Loom(runtime) => Ok(runtime),
             Self::Native => {

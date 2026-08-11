@@ -2145,15 +2145,12 @@ impl MistralRs {
             Arc::clone(&engine.reboot_state.pipeline)
         };
 
-        pipeline
-            .lock()
-            .await
-            .loom_paged_decode_stats()
-            .map_err(|err| {
-                MistralRsError::Other(format!(
-                    "failed to read Loom paged-decode stats for model `{resolved_model_id}`: {err}"
-                ))
-            })
+        let stats = pipeline.lock().await.loom_paged_decode_stats();
+        stats.map_err(|err| {
+            MistralRsError::Other(format!(
+                "failed to read Loom paged-decode stats for model `{resolved_model_id}`: {err}"
+            ))
+        })
     }
 
     /// Get model category for a specific model. If model_id is None, uses default engine.
