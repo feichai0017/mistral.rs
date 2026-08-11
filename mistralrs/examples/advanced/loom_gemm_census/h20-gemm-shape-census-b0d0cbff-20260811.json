@@ -1,0 +1,125 @@
+{
+  "schema": "mistralrs.gemm-shape-census-h20.v1",
+  "date": "2026-08-11",
+  "scope": "untimed single-request Qwen dense-linear host dispatch census",
+  "source": {
+    "mistral_rs_commit": "b0d0cbffb71d17e22e2a215a82020e2d3d4cd7b1",
+    "mistral_rs_tree": "5688da651aa490e0533df179e268620df08bd232",
+    "loom_schema_commit": "8b971b064d4246b2cd5cbc74f9902a51c720aefa",
+    "loom_schema_tree": "96d5d16286537254f030561790d04a588fccc7c2",
+    "run_source_matches_commits": true,
+    "run_worktrees_clean": true,
+    "tracked_file_manifests": {
+      "mistral_rs_sha256": "da94f0f3f845bf99953d30f890678d2adf626e2a74dbbcdc79db48b9d2d8f244",
+      "loom_infer_sha256": "8552592c99469eb5058ab1186e760e5ac5772714c98e4b3ed1ba9b00d42ec665"
+    }
+  },
+  "hardware": {
+    "gpu": "NVIDIA H20",
+    "compute_capability": "9.0",
+    "driver": "535.161.08",
+    "cuda_toolkit": "13.1",
+    "cuda_arch": "sm_90a",
+    "rustc": "1.96.0-nightly (55e86c996 2026-04-02)"
+  },
+  "execution_environment": {
+    "host_alias": "forge1",
+    "working_directory": "/workspace/loom-gemm-census.V4tzoP/mistral.rs",
+    "cargo_home": "/workspace/mistral-loom-adapter.7cSCXf/cargo-home",
+    "nvcc": "/usr/local/cuda/bin/nvcc",
+    "cutlass": "/workspace/mistral-loom-adapter.7cSCXf/cutlass-7127592069c2fe01"
+  },
+  "workload": {
+    "model": "Qwen2.5-1.5B-Instruct",
+    "prompt_tokens": 42,
+    "completion_tokens": 8,
+    "prefill_forward_steps": 1,
+    "decode_forward_steps": 7,
+    "tensor_parallel_size": 1,
+    "cuda_graph_enabled": false,
+    "dtype": "BF16"
+  },
+  "artifacts": {
+    "raw": {
+      "path": "results/h20-gemm-shape-census-b0d0cbff-20260811.raw.jsonl",
+      "sha256": "bb063790374493eda03a1e04295a4e5ac831d8d17b329a0ac32f977b68f1b3f7"
+    },
+    "summary": {
+      "path": "results/h20-gemm-shape-census-b0d0cbff-20260811.summary.json",
+      "sha256": "c0630b3388b830d2e993c41a86539a1b258951c4c67b24d6f4b1229080a245f3"
+    },
+    "remote_artifact_manifest_sha256": "fd8827aa929c903ba2132c09fb9338da513ce6c947d5e49afef601fe0db13d29"
+  },
+  "checks": [
+    {
+      "name": "CUDA feature check",
+      "command": "NVCC=/usr/local/cuda/bin/nvcc CUDA_COMPUTE_CAP=90 cargo +nightly-2026-04-03 check --locked -p mistralrs --bin loom_gemm_census --features cuda,gemm-census",
+      "exit_code": 0,
+      "log_sha256": "bea1535e74d8ee9806fbbd6ac3cfa49b1d5e52a0cf0966ce23648c6f70f821f5"
+    },
+    {
+      "name": "CUDA strict Clippy",
+      "command": "NVCC=/usr/local/cuda/bin/nvcc CUDA_COMPUTE_CAP=90 cargo +nightly-2026-04-03 clippy --locked -p mistralrs --bin loom_gemm_census --features cuda,gemm-census -- -D warnings",
+      "exit_code": 0,
+      "log_sha256": "a3a5261aa8cd4b93ef0cb0c320dd0a5e221cf8e1107b331432b6d15ce039b786"
+    },
+    {
+      "name": "release census",
+      "command": "NVCC=/usr/local/cuda/bin/nvcc CUDA_COMPUTE_CAP=90 cargo +nightly-2026-04-03 run --release --locked --bin loom_gemm_census --features cuda,gemm-census",
+      "exit_code": 0,
+      "log_sha256": "20faec9484ebbe82ce2f44cf6bf3c68d8d3c33b7d2a9eb68a647d6ae6fca13e8"
+    },
+    {
+      "name": "Loom schema validation",
+      "command": "python3 tools/gemm/shape_census.py validate RAW",
+      "exit_code": 0,
+      "status": "valid",
+      "log_sha256": "dedca99dbbe6545962f9baea79a9e1fcd737c526da18cc1f013ff53c83a610ff"
+    },
+    {
+      "name": "Loom deterministic summary",
+      "command": "python3 tools/gemm/shape_census.py summarize RAW",
+      "exit_code": 0,
+      "stdout_saved_as": "results/h20-gemm-shape-census-b0d0cbff-20260811.summary.json",
+      "log_sha256": "bf0c848bfbd3bf97cf90b8f99f5a5054606fad8640a4c8edfd46986dccd13509"
+    }
+  ],
+  "result": {
+    "raw_entries": 338,
+    "dense_linear_sites": 169,
+    "host_calls": 1352,
+    "prefill_host_calls": 169,
+    "decode_host_calls": 1183,
+    "decode_host_calls_per_forward": 169,
+    "routes": {
+      "mistral_cuda_gemv": 1184,
+      "candle_cuda_flattened_matmul": 168
+    },
+    "m1_host_calls": 1184,
+    "m1_call_share": 0.8757396449704142,
+    "m1_flop_share": 0.1670793257784973,
+    "shape_buckets": 10,
+    "all_buckets_bf16": true,
+    "all_buckets_have_no_post_ops": true,
+    "all_buckets_loom_logical_contract_compatible": true
+  },
+  "qualified_observations": [
+    "The fixed request issued 1352 successful dense-linear host dispatches.",
+    "M equals one covered 1184 host calls and every decode dense-linear dispatch.",
+    "The M equals one baseline was the existing Mistral CUDA GEMV path.",
+    "Every observed M equals one shape satisfies N divisible by 16 and K divisible by 64."
+  ],
+  "not_qualified": [
+    "latency",
+    "throughput",
+    "TTFT",
+    "TPOT",
+    "CUDA kernel launch counts",
+    "Oxide kernel performance",
+    "general model coverage",
+    "production workload frequency",
+    "CUDA Graph execution",
+    "tensor parallel execution",
+    "multiple GPUs"
+  ]
+}

@@ -75,3 +75,23 @@ python3 ../loom-infer/tools/gemm/shape_census.py validate \
 
 This record supports dispatch-count and shape claims only. It does not contain
 timing or CUDA kernel launch counts.
+
+## H20 result
+
+The fixed request passed CUDA check, strict Clippy, release execution, schema
+validation, and deterministic aggregation on 2026-08-11. The run used Mistral
+commit `b0d0cbffb71d17e22e2a215a82020e2d3d4cd7b1` and Loom schema commit
+`8b971b064d4246b2cd5cbc74f9902a51c720aefa`.
+
+The census recorded 1,352 successful dense-linear host dispatches: 169 during
+prefill and 1,183 during seven decode forwards. M equals one covered 1,184
+calls, or 87.574 percent, and 16.708 percent of recorded FLOPs.
+
+All M equals one calls used the existing Mistral CUDA GEMV path. A future Loom
+kernel must compare against both that path and cuBLASLt.
+
+The [validation record](h20-gemm-shape-census-b0d0cbff-20260811.json) links the
+committed [raw record](results/h20-gemm-shape-census-b0d0cbff-20260811.raw.jsonl)
+and [deterministic summary](results/h20-gemm-shape-census-b0d0cbff-20260811.summary.json).
+The evidence does not establish latency, throughput, TTFT, TPOT, or Oxide
+kernel performance.
