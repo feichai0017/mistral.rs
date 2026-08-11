@@ -497,7 +497,7 @@ impl AnyMoePipelineMixin for AnyMoePipeline {
                 // === PREPARE AND RUN MODEL ==
 
                 // Run the model, ignoring the logits
-                let _ = target.forward_inputs_and_drain_loom(inputs.unwrap().inputs, false)?;
+                let _ = target.forward_inputs(inputs.unwrap().inputs, false)?;
 
                 // Clear the KV cache
                 target.set_none_cache(&mut input_seqs, true, true, false);

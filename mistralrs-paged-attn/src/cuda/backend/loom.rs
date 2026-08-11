@@ -18,7 +18,7 @@ use loom_infer_cuda::memory::{ReadDeviceRegion, ReadWriteDeviceRegion};
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 const HEAD_DIM: usize = 128;
 const PAGE_SIZE: usize = 16;
@@ -48,8 +48,8 @@ struct CandleStreamAuthority {
     stream: Arc<CudaStream>,
 }
 
-// SAFETY: this private authority is created only while the caller of
-// `loom_paged_decode` upholds its exclusive model-runner submission contract.
+// SAFETY: this private authority exists only while the caller upholds the
+// runtime's exclusive model-runner submission contract.
 unsafe impl StreamOrderedEngineAuthority for CandleStreamAuthority {
     fn submission_stream(&self) -> loom_cuda_core::sys::CUstream {
         loom_stream(&self.stream)
@@ -57,6 +57,7 @@ unsafe impl StreamOrderedEngineAuthority for CandleStreamAuthority {
 }
 
 struct LoomRuntime {
+    key: RuntimeKey,
     stream: Arc<CudaStream>,
     context: Arc<CudaContext>,
     provider: DecodeProvider,
@@ -93,6 +94,7 @@ impl LoomRuntime {
         let queue = EngineInteropQueue::new(external, COMMAND_CAPACITY, MAX_IN_FLIGHT)
             .map_err(|error| loom_external_error("failed to create the Loom queue", error))?;
         Ok(Self {
+            key,
             stream,
             context,
             provider,
@@ -368,8 +370,8 @@ impl LoomPagedDecodeStats {
 /// An error returned while draining queued Loom decode completions.
 #[derive(Debug, thiserror::Error)]
 pub enum LoomPagedDecodeDrainError {
-    #[error("Loom runtime registry is poisoned after {drained} completions settled")]
-    RegistryPoisoned { drained: usize },
+    #[error("Loom decode runtime is poisoned after {drained} completions settled")]
+    RuntimePoisoned { drained: usize },
     #[error(
         "Loom decode completion at FIFO position {failed_position} failed after {drained} completions settled: {source}"
     )]
@@ -384,14 +386,14 @@ pub enum LoomPagedDecodeDrainError {
 impl LoomPagedDecodeDrainError {
     pub const fn drained(&self) -> usize {
         match self {
-            Self::RegistryPoisoned { drained } | Self::Completion { drained, .. } => *drained,
+            Self::RuntimePoisoned { drained } | Self::Completion { drained, .. } => *drained,
         }
     }
 
     /// Returns the one-based position of the first failed completion.
     pub const fn failed_position(&self) -> Option<usize> {
         match self {
-            Self::RegistryPoisoned { .. } => None,
+            Self::RuntimePoisoned { .. } => None,
             Self::Completion {
                 failed_position, ..
             } => Some(*failed_position),
@@ -400,48 +402,101 @@ impl LoomPagedDecodeDrainError {
 
     pub const fn cause(&self) -> Option<&EngineCommandFailure> {
         match self {
-            Self::RegistryPoisoned { .. } => None,
+            Self::RuntimePoisoned { .. } => None,
             Self::Completion { source, .. } => Some(source.cause()),
         }
     }
 
     pub const fn trace(&self) -> Option<&EngineExecutionTrace> {
         match self {
-            Self::RegistryPoisoned { .. } => None,
+            Self::RuntimePoisoned { .. } => None,
             Self::Completion { source, .. } => Some(source.trace()),
         }
     }
 }
 
 #[derive(Default)]
-struct RuntimeRegistry {
-    runtimes: HashMap<RuntimeKey, LoomRuntime>,
+struct LoomPagedDecodeRuntimeState {
+    runtime: Option<LoomRuntime>,
     pending: VecDeque<PendingDecode>,
     stats: LoomPagedDecodeStats,
 }
 
-impl RuntimeRegistry {
+impl LoomPagedDecodeRuntimeState {
     fn ensure_runtime(
         &mut self,
         key: RuntimeKey,
         ordinal: usize,
         stream: Arc<CudaStream>,
-    ) -> Result<()> {
-        if self.runtimes.contains_key(&key) {
-            return Ok(());
+    ) -> Result<&mut LoomRuntime> {
+        if let Some(runtime) = self.runtime.as_ref() {
+            if runtime.key != key {
+                return Err(loom_error(
+                    "Loom paged decode runtime is already bound to another CUDA context or stream",
+                ));
+            }
         }
-        if !self.runtimes.is_empty() {
-            return Err(loom_error(
-                "Loom paged decode currently supports one CUDA device and one ordinary stream",
-            ));
+        if self.runtime.is_none() {
+            self.runtime = Some(LoomRuntime::new(key, ordinal, stream)?);
         }
-        let runtime = LoomRuntime::new(key, ordinal, stream)?;
-        self.runtimes.insert(key, runtime);
-        Ok(())
+        self.runtime
+            .as_mut()
+            .ok_or_else(|| loom_error("Loom decode runtime initialization did not complete"))
     }
 }
 
-static RUNTIMES: OnceLock<Mutex<RuntimeRegistry>> = OnceLock::new();
+/// A model-owned Loom paged-decode runtime bound lazily to one CUDA stream.
+pub struct LoomPagedDecodeRuntime {
+    lifecycle: Mutex<()>,
+    state: Mutex<LoomPagedDecodeRuntimeState>,
+}
+
+impl Default for LoomPagedDecodeRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LoomPagedDecodeRuntime {
+    /// Creates an unbound runtime. The first enqueue binds its CUDA context and stream.
+    pub fn new() -> Self {
+        Self {
+            lifecycle: Mutex::new(()),
+            state: Mutex::new(LoomPagedDecodeRuntimeState::default()),
+        }
+    }
+
+    fn lock_lifecycle(&self) -> Result<MutexGuard<'_, ()>> {
+        self.lifecycle
+            .lock()
+            .map_err(|_| loom_error("Loom decode runtime lifecycle is poisoned"))
+    }
+
+    fn lock_lifecycle_for_drain(
+        &self,
+        drained: usize,
+    ) -> std::result::Result<MutexGuard<'_, ()>, LoomPagedDecodeDrainError> {
+        self.lifecycle
+            .lock()
+            .map_err(|_| LoomPagedDecodeDrainError::RuntimePoisoned { drained })
+    }
+
+    fn lock_state(&self) -> Result<MutexGuard<'_, LoomPagedDecodeRuntimeState>> {
+        self.state
+            .lock()
+            .map_err(|_| loom_error("Loom decode runtime is poisoned"))
+    }
+
+    fn lock_state_for_drain(
+        &self,
+        drained: usize,
+    ) -> std::result::Result<MutexGuard<'_, LoomPagedDecodeRuntimeState>, LoomPagedDecodeDrainError>
+    {
+        self.state
+            .lock()
+            .map_err(|_| LoomPagedDecodeDrainError::RuntimePoisoned { drained })
+    }
+}
 
 struct DecodeTensors<'a> {
     query: &'a Tensor,
@@ -471,6 +526,7 @@ struct DecodePointers {
 }
 
 struct DecodeLaunch<'a> {
+    runtime: &'a LoomPagedDecodeRuntime,
     key: RuntimeKey,
     plan: Bf16PagedBatchDecodePlan,
     tensors: DecodeTensors<'a>,
@@ -634,11 +690,12 @@ fn enqueue_with_read_guards(
     pointers.last_page_len = last_page_len;
 
     let completion = {
-        let mut registry = lock_registry()?;
-        let runtime = registry
-            .runtimes
-            .get_mut(&launch.key)
-            .ok_or_else(|| loom_error("Loom runtime disappeared before enqueue"))?;
+        let mut state = launch.runtime.lock_state()?;
+        let runtime = state
+            .runtime
+            .as_mut()
+            .filter(|runtime| runtime.key == launch.key)
+            .ok_or_else(|| loom_error("Loom decode runtime binding changed before enqueue"))?;
         runtime.enqueue(&launch.plan, tensors, pointers)?
     };
     drop(last_guard);
@@ -650,164 +707,162 @@ fn enqueue_with_read_guards(
     Ok(completion)
 }
 
-/// Enqueues one BF16, D128, page-size-16 HND paged decode on Loom.
-///
-/// `logical_page_count` is the CSR terminal value. Only that prefix of a
-/// padded `paged_kv_indices` tensor is exposed to Loom.
-///
-/// # Safety
-///
-/// During this call, the model runner must own exclusive submission authority
-/// for the ordinary CUDA stream and exclusive access to every writable span.
-/// It must not use aliases of these tensors concurrently. Event tracking must
-/// remain enabled. Until the completion drain, later access must use the same
-/// stream or Candle's tracked pointer APIs.
-#[allow(clippy::too_many_arguments)]
-pub unsafe fn loom_paged_decode(
-    query: &Tensor,
-    key_cache: &Tensor,
-    value_cache: &Tensor,
-    paged_kv_indptr: &Tensor,
-    paged_kv_indices: &Tensor,
-    logical_page_count: usize,
-    paged_kv_last_page_len: &Tensor,
-) -> Result<Tensor> {
-    validate_inputs(
-        query,
-        key_cache,
-        value_cache,
-        paged_kv_indptr,
-        paged_kv_indices,
-        logical_page_count,
-        paged_kv_last_page_len,
-    )?;
-    let device = query.device().as_cuda_device()?;
-    if !device.is_event_tracking() {
-        return Err(loom_error("Loom paged decode requires CUDA event tracking"));
-    }
-    let stream = device.cuda_stream();
-    if stream.capture_status().map_err(|error| {
-        loom_external_error("failed to query CUDA stream capture status", error)
-    })? != candle_core::cuda::cudarc::driver::sys::CUstreamCaptureStatus::CU_STREAM_CAPTURE_STATUS_NONE
-    {
-        return Err(loom_error(
-            "Loom paged decode does not support active CUDA graph capture",
-        ));
-    }
-    let key = runtime_key(&stream);
-    if key.stream <= 2 {
-        return Err(loom_error(
-            "Loom paged decode requires Device::new_cuda_with_stream",
-        ));
-    }
-    let ordinal = stream.context().ordinal();
-    let (batch_size, num_query_heads, head_dim) = query.dims3()?;
-    let (max_num_pages, num_kv_heads, page_size, _) = key_cache.dims4()?;
-    let spec = Bf16PagedBatchDecodeSpec::new(
-        batch_size,
-        max_num_pages,
-        num_query_heads,
-        num_kv_heads,
-        head_dim,
-        page_size,
-        PagedKvLayout::Hnd,
-    )
-    .map_err(|error| loom_external_error("invalid Loom paged-decode contract", error))?;
-    let plan_key = PlanKey {
-        batch_size,
-        max_num_pages,
-        num_query_heads,
-        num_kv_heads,
-    };
-    let plan = {
-        let mut registry = lock_registry()?;
-        registry.ensure_runtime(key, ordinal, Arc::clone(&stream))?;
-        registry
-            .runtimes
-            .get_mut(&key)
-            .expect("the runtime was inserted above")
-            .plan(plan_key, spec)?
-    };
-    let output = unsafe {
-        Tensor::empty(
-            (batch_size, num_query_heads, HEAD_DIM),
-            DType::BF16,
-            query.device(),
-        )?
-    };
-    let lse = unsafe { Tensor::empty((batch_size, num_query_heads), DType::F32, query.device())? };
-    let metadata_status = unsafe {
-        Tensor::empty(
-            plan.metadata_status_required_numel(),
-            DType::I32,
-            query.device(),
-        )?
-    };
-    let launch = DecodeLaunch {
-        key,
-        plan,
-        tensors: DecodeTensors {
+impl LoomPagedDecodeRuntime {
+    /// Enqueues one BF16, D128, page-size-16 HND paged decode.
+    ///
+    /// `logical_page_count` is the CSR terminal value. Loom reads only this
+    /// prefix of a padded `paged_kv_indices` tensor.
+    ///
+    /// # Safety
+    ///
+    /// During this call, the model runner must own exclusive submission
+    /// authority for the ordinary CUDA stream and every writable span. It must
+    /// not use tensor aliases concurrently. Event tracking must remain enabled.
+    /// Before `drain` returns, later access must use the same stream or Candle's
+    /// tracked pointer APIs.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn enqueue_paged_decode(
+        &self,
+        query: &Tensor,
+        key_cache: &Tensor,
+        value_cache: &Tensor,
+        paged_kv_indptr: &Tensor,
+        paged_kv_indices: &Tensor,
+        logical_page_count: usize,
+        paged_kv_last_page_len: &Tensor,
+    ) -> Result<Tensor> {
+        validate_inputs(
             query,
             key_cache,
             value_cache,
-            page_indptr: paged_kv_indptr,
-            page_indices: paged_kv_indices,
-            last_page_len: paged_kv_last_page_len,
-            metadata_status: &metadata_status,
-            output: &output,
-            lse: &lse,
+            paged_kv_indptr,
+            paged_kv_indices,
             logical_page_count,
-            spec,
-        },
-        completion: RefCell::new(None),
-    };
-    output.inplace_op1(&OutputInplace { launch: &launch })?;
-    let completion = launch
-        .completion
-        .into_inner()
-        .ok_or_else(|| loom_error("Loom decode returned without a completion"))?;
-    let mut registry = lock_registry()?;
-    registry.stats.record_submission(completion.trace());
-    registry.pending.push_back(PendingDecode { completion });
-    Ok(output)
-}
+            paged_kv_last_page_len,
+        )?;
+        let _lifecycle = self.lock_lifecycle()?;
+        let device = query.device().as_cuda_device()?;
+        if !device.is_event_tracking() {
+            return Err(loom_error("Loom paged decode requires CUDA event tracking"));
+        }
+        let stream = device.cuda_stream();
+        if stream.capture_status().map_err(|error| {
+            loom_external_error("failed to query CUDA stream capture status", error)
+        })? != candle_core::cuda::cudarc::driver::sys::CUstreamCaptureStatus::CU_STREAM_CAPTURE_STATUS_NONE
+        {
+            return Err(loom_error(
+                "Loom paged decode does not support active CUDA graph capture",
+            ));
+        }
+        let key = runtime_key(&stream);
+        if key.stream <= 2 {
+            return Err(loom_error(
+                "Loom paged decode requires Device::new_cuda_with_stream",
+            ));
+        }
+        let ordinal = stream.context().ordinal();
+        let (batch_size, num_query_heads, head_dim) = query.dims3()?;
+        let (max_num_pages, num_kv_heads, page_size, _) = key_cache.dims4()?;
+        let spec = Bf16PagedBatchDecodeSpec::new(
+            batch_size,
+            max_num_pages,
+            num_query_heads,
+            num_kv_heads,
+            head_dim,
+            page_size,
+            PagedKvLayout::Hnd,
+        )
+        .map_err(|error| loom_external_error("invalid Loom paged-decode contract", error))?;
+        let plan_key = PlanKey {
+            batch_size,
+            max_num_pages,
+            num_query_heads,
+            num_kv_heads,
+        };
+        let plan = self
+            .lock_state()?
+            .ensure_runtime(key, ordinal, Arc::clone(&stream))?
+            .plan(plan_key, spec)?;
+        let output = unsafe {
+            Tensor::empty(
+                (batch_size, num_query_heads, HEAD_DIM),
+                DType::BF16,
+                query.device(),
+            )?
+        };
+        let lse =
+            unsafe { Tensor::empty((batch_size, num_query_heads), DType::F32, query.device())? };
+        let metadata_status = unsafe {
+            Tensor::empty(
+                plan.metadata_status_required_numel(),
+                DType::I32,
+                query.device(),
+            )?
+        };
+        let launch = DecodeLaunch {
+            runtime: self,
+            key,
+            plan,
+            tensors: DecodeTensors {
+                query,
+                key_cache,
+                value_cache,
+                page_indptr: paged_kv_indptr,
+                page_indices: paged_kv_indices,
+                last_page_len: paged_kv_last_page_len,
+                metadata_status: &metadata_status,
+                output: &output,
+                lse: &lse,
+                logical_page_count,
+                spec,
+            },
+            completion: RefCell::new(None),
+        };
+        output.inplace_op1(&OutputInplace { launch: &launch })?;
+        let completion = launch
+            .completion
+            .into_inner()
+            .ok_or_else(|| loom_error("Loom decode returned without a completion"))?;
+        let mut state = self.lock_state()?;
+        state.stats.record_submission(completion.trace());
+        state.pending.push_back(PendingDecode { completion });
+        Ok(output)
+    }
 
-/// Waits for all queued Loom decode commands in submission order.
-pub fn drain_loom_paged_decode_completions() -> std::result::Result<usize, LoomPagedDecodeDrainError>
-{
-    let mut drained = 0;
-    let mut first_error = None;
-    loop {
-        let pending = {
-            let mut registry = lock_registry_for_drain(drained)?;
-            registry.pending.pop_front()
-        };
-        let Some(pending) = pending else {
-            return match first_error {
-                Some((failed_position, source)) => Err(LoomPagedDecodeDrainError::Completion {
-                    drained,
-                    failed_position,
-                    source,
-                }),
-                None => Ok(drained),
+    /// Waits for all queued decode commands in submission order.
+    pub fn drain(&self) -> std::result::Result<usize, LoomPagedDecodeDrainError> {
+        let mut drained = 0;
+        let mut first_error = None;
+        let _lifecycle = self.lock_lifecycle_for_drain(drained)?;
+        loop {
+            let pending = self.lock_state_for_drain(drained)?.pending.pop_front();
+            let Some(pending) = pending else {
+                return match first_error {
+                    Some((failed_position, source)) => Err(LoomPagedDecodeDrainError::Completion {
+                        drained,
+                        failed_position,
+                        source,
+                    }),
+                    None => Ok(drained),
+                };
             };
-        };
-        let result = pending.completion.wait();
-        drained += 1;
-        lock_registry_for_drain(drained)?
-            .stats
-            .record_completion(result.is_err());
-        if let Err(source) = result {
-            if first_error.is_none() {
-                first_error = Some((drained, source));
+            let result = pending.completion.wait();
+            drained += 1;
+            self.lock_state_for_drain(drained)?
+                .stats
+                .record_completion(result.is_err());
+            if let Err(source) = result {
+                if first_error.is_none() {
+                    first_error = Some((drained, source));
+                }
             }
         }
     }
-}
 
-/// Returns a snapshot of provider-hit and completion evidence.
-pub fn loom_paged_decode_stats() -> Result<LoomPagedDecodeStats> {
-    Ok(lock_registry()?.stats)
+    /// Returns a snapshot of provider-hit and completion evidence.
+    pub fn stats(&self) -> Result<LoomPagedDecodeStats> {
+        Ok(self.lock_state()?.stats)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -929,24 +984,6 @@ fn offset_pointer<T>(base: u64, offset: usize) -> Result<u64> {
         .ok_or_else(|| loom_error("CUDA tensor offset overflow"))?;
     base.checked_add(bytes as u64)
         .ok_or_else(|| loom_error("CUDA device pointer overflow"))
-}
-
-fn registry() -> &'static Mutex<RuntimeRegistry> {
-    RUNTIMES.get_or_init(|| Mutex::new(RuntimeRegistry::default()))
-}
-
-fn lock_registry() -> Result<MutexGuard<'static, RuntimeRegistry>> {
-    registry()
-        .lock()
-        .map_err(|_| loom_error("Loom runtime registry is poisoned"))
-}
-
-fn lock_registry_for_drain(
-    drained: usize,
-) -> std::result::Result<MutexGuard<'static, RuntimeRegistry>, LoomPagedDecodeDrainError> {
-    registry()
-        .lock()
-        .map_err(|_| LoomPagedDecodeDrainError::RegistryPoisoned { drained })
 }
 
 fn loom_external_error(context: &str, error: impl std::fmt::Display) -> Error {

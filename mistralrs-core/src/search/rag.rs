@@ -144,7 +144,7 @@ impl SearchPipeline {
             });
             let mut pipeline = get_mut_arcmutex!(self.model);
             let ForwardInputsResult::Embeddings { embeddings } =
-                pipeline.forward_inputs_and_drain_loom(inputs, false)?
+                pipeline.forward_inputs(inputs, false)?
             else {
                 anyhow::bail!("Embedding pipeline returned non-embedding output");
             };

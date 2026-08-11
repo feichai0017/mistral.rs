@@ -26,10 +26,48 @@ pub use config::{KvCacheLayout, KvCacheTopology, ModelConfigLike, ModelConfigMet
 pub use kv_cache_manager::KVCacheManager;
 pub use layers::PagedAttention;
 #[cfg(all(feature = "loom-infer", target_family = "unix"))]
-pub use mistralrs_paged_attn::{loom_paged_decode_stats, LoomPagedDecodeStats};
+pub use mistralrs_paged_attn::{LoomPagedDecodeRuntime, LoomPagedDecodeStats};
 pub use scheduler::{
     PagedAttentionScheduler, PagedAttentionSchedulerConfig, PagedAttentionSchedulerOutput,
 };
+
+/// Model-owned runtime selected for one paged-attention forward.
+#[cfg(all(feature = "loom-infer", target_family = "unix"))]
+#[derive(Clone, Copy)]
+pub(crate) enum PagedAttentionRuntime<'a> {
+    Native,
+    Loom(&'a LoomPagedDecodeRuntime),
+}
+
+/// Native paged attention has no provider runtime to borrow.
+#[cfg(not(all(feature = "loom-infer", target_family = "unix")))]
+#[derive(Clone, Copy)]
+pub(crate) struct PagedAttentionRuntime<'a>(std::marker::PhantomData<&'a ()>);
+
+impl PagedAttentionRuntime<'_> {
+    pub const fn native() -> Self {
+        #[cfg(all(feature = "loom-infer", target_family = "unix"))]
+        {
+            Self::Native
+        }
+        #[cfg(not(all(feature = "loom-infer", target_family = "unix")))]
+        {
+            Self(std::marker::PhantomData)
+        }
+    }
+}
+
+#[cfg(all(feature = "loom-infer", target_family = "unix"))]
+impl PagedAttentionRuntime<'_> {
+    pub(crate) fn require_loom(self) -> candle_core::Result<&LoomPagedDecodeRuntime> {
+        match self {
+            Self::Loom(runtime) => Ok(runtime),
+            Self::Native => {
+                candle_core::bail!("Loom paged decode requires a model-owned Loom runtime")
+            }
+        }
+    }
+}
 
 use crate::MemoryUsage;
 use tracing::info;

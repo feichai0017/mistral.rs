@@ -73,8 +73,14 @@ mod tests {
         let context_lens = [(0, 1), (0, 1)];
         let position_ids = [3, 3];
         let flash_params = FlashParams::empty(true);
-        let mut ctx =
-            ModelForwardContext::new(&offsets, &context_lens, &position_ids, None, &flash_params);
+        let mut ctx = ModelForwardContext::new(
+            &offsets,
+            &context_lens,
+            &position_ids,
+            None,
+            &flash_params,
+            crate::paged_attention::PagedAttentionRuntime::native(),
+        );
 
         assert_eq!(
             rope_positions(&mut ctx, &Device::Cpu, 3)?.to_vec1::<u32>()?,
@@ -100,6 +106,7 @@ mod tests {
             &position_ids,
             Some((kv_cache.as_slice(), &metadata)),
             &flash_params,
+            crate::paged_attention::PagedAttentionRuntime::native(),
         );
 
         assert_eq!(

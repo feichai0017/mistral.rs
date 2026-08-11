@@ -6,10 +6,7 @@ use loom_infer::{
     paged_batch_decode_bf16_reference, Bf16PagedBatchDecodeSpec, ContractError, PagedKvLayout,
 };
 use loom_infer_cuda::interop::{EngineAlgorithm, EngineCommandFailure, EngineOperator};
-use mistralrs_paged_attn::{
-    drain_loom_paged_decode_completions, loom_paged_decode, loom_paged_decode_stats,
-    LoomPagedDecodeStats,
-};
+use mistralrs_paged_attn::{LoomPagedDecodeRuntime, LoomPagedDecodeStats};
 use std::error::Error;
 
 const BATCH_SIZE: usize = 2;
@@ -24,6 +21,7 @@ const OUTPUT_MAX_ABS_LIMIT: f32 = 0.015_625;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let device = Device::new_cuda_with_stream(0)?;
+    let runtime = LoomPagedDecodeRuntime::new();
     let spec = Bf16PagedBatchDecodeSpec::new(
         BATCH_SIZE,
         MAX_NUM_PAGES,
@@ -77,9 +75,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         &device,
     )?;
     let last_page_len = Tensor::from_vec(last_page_len_host.to_vec(), BATCH_SIZE, &device)?;
-    let baseline = loom_paged_decode_stats()?;
+    let baseline = runtime.stats()?;
 
     let valid_before = enqueue(
+        &runtime,
         &query,
         &key_cache,
         &value_cache,
@@ -88,6 +87,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &last_page_len,
     )?;
     let _invalid = enqueue(
+        &runtime,
         &query,
         &key_cache,
         &value_cache,
@@ -96,6 +96,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &last_page_len,
     )?;
     let valid_after = enqueue(
+        &runtime,
         &query,
         &key_cache,
         &value_cache,
@@ -104,6 +105,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &last_page_len,
     )?;
     let valid_tail = enqueue(
+        &runtime,
         &query,
         &key_cache,
         &value_cache,
@@ -111,9 +113,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         &valid_page_indices,
         &last_page_len,
     )?;
-    assert_stats_delta(loom_paged_decode_stats()?, baseline, 4, 0, 0)?;
+    assert_stats_delta(runtime.stats()?, baseline, 4, 0, 0)?;
 
-    let error = drain_loom_paged_decode_completions()
+    let error = runtime
+        .drain()
         .expect_err("invalid CSR metadata must fail the adapter drain");
     let failed_trace = error
         .trace()
@@ -142,9 +145,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let before_max_abs = compare_output(&valid_before, &expected_output, "valid before error")?;
     let after_max_abs = compare_output(&valid_after, &expected_output, "valid after error")?;
     let tail_max_abs = compare_output(&valid_tail, &expected_output, "valid FIFO tail")?;
-    assert_stats_delta(loom_paged_decode_stats()?, baseline, 4, 4, 1)?;
+    assert_stats_delta(runtime.stats()?, baseline, 4, 4, 1)?;
 
     let reused = enqueue(
+        &runtime,
         &query,
         &key_cache,
         &value_cache,
@@ -152,31 +156,90 @@ fn main() -> Result<(), Box<dyn Error>> {
         &valid_page_indices,
         &last_page_len,
     )?;
-    assert_stats_delta(loom_paged_decode_stats()?, baseline, 5, 4, 1)?;
-    if drain_loom_paged_decode_completions()? != 1 {
+    assert_stats_delta(runtime.stats()?, baseline, 5, 4, 1)?;
+    if runtime.drain()? != 1 {
         return Err("adapter reuse drain did not settle one completion".into());
     }
     let reuse_max_abs = compare_output(&reused, &expected_output, "valid reuse")?;
-    let stats = loom_paged_decode_stats()?;
+    let stats = runtime.stats()?;
     assert_stats_delta(stats, baseline, 5, 5, 1)?;
-    if drain_loom_paged_decode_completions()? != 0 {
+    if runtime.drain()? != 0 {
         return Err("adapter drain left a queued completion".into());
+    }
+
+    let concurrent_first = enqueue(
+        &runtime,
+        &query,
+        &key_cache,
+        &value_cache,
+        &page_indptr,
+        &valid_page_indices,
+        &last_page_len,
+    )?;
+    let concurrent_second = enqueue(
+        &runtime,
+        &query,
+        &key_cache,
+        &value_cache,
+        &page_indptr,
+        &valid_page_indices,
+        &last_page_len,
+    )?;
+    assert_stats_delta(runtime.stats()?, baseline, 7, 5, 1)?;
+    let mut concurrent_drains = std::thread::scope(|scope| {
+        let first = scope.spawn(|| {
+            runtime
+                .drain()
+                .expect("the first concurrent valid drain must succeed")
+        });
+        let second = scope.spawn(|| {
+            runtime
+                .drain()
+                .expect("the second concurrent valid drain must succeed")
+        });
+        [
+            first.join().expect("the first drainer must not panic"),
+            second.join().expect("the second drainer must not panic"),
+        ]
+    });
+    concurrent_drains.sort_unstable();
+    if concurrent_drains != [0, 2] {
+        return Err(
+            format!("concurrent drainers split the FIFO: observed {concurrent_drains:?}").into(),
+        );
+    }
+    let concurrent_first_max_abs = compare_output(
+        &concurrent_first,
+        &expected_output,
+        "first concurrent drain",
+    )?;
+    let concurrent_second_max_abs = compare_output(
+        &concurrent_second,
+        &expected_output,
+        "second concurrent drain",
+    )?;
+    assert_stats_delta(runtime.stats()?, baseline, 7, 7, 1)?;
+    if runtime.drain()? != 0 {
+        return Err("concurrent drainers left a queued completion".into());
     }
 
     println!(
         "gate=loom_adapter_h20 status=pass sequence=valid,invalid,valid,valid,drain,valid,drain \
-         submitted_delta=5 completed_delta=5 failed_delta=1 typed_page_error=true \
+         submitted_delta=7 completed_delta=7 failed_delta=1 typed_page_error=true \
          fifo_failed_position=2 same_runtime_reuse=true layout=HND gqa_group=6 \
          algorithm=PagedBatchDecodeTokenParallel8 adapter_zero_copy=true \
-         adapter_d2d_copies=0 valid_before_max_abs={before_max_abs:.9e} \
+         adapter_d2d_copies=0 concurrent_drains=0,2 valid_before_max_abs={before_max_abs:.9e} \
          valid_after_max_abs={after_max_abs:.9e} valid_tail_max_abs={tail_max_abs:.9e} \
-         reuse_max_abs={reuse_max_abs:.9e}"
+         reuse_max_abs={reuse_max_abs:.9e} \
+         concurrent_first_max_abs={concurrent_first_max_abs:.9e} \
+         concurrent_second_max_abs={concurrent_second_max_abs:.9e}"
     );
     Ok(())
 }
 
 #[allow(unsafe_code)]
 fn enqueue(
+    runtime: &LoomPagedDecodeRuntime,
     query: &Tensor,
     key_cache: &Tensor,
     value_cache: &Tensor,
@@ -186,7 +249,7 @@ fn enqueue(
 ) -> candle_core::Result<Tensor> {
     // SAFETY: the gate uses one thread, one device, and one ordinary stream.
     unsafe {
-        loom_paged_decode(
+        runtime.enqueue_paged_decode(
             query,
             key_cache,
             value_cache,

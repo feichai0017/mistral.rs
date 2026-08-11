@@ -66,7 +66,9 @@ cargo +nightly-2026-04-03 oxide run --bin loom_adapter_h20 \
 ## H20 result
 
 The 2026-08-11 run used an NVIDIA H20, CUDA 13.1, cuda-oxide `868f8ec`, Loom
-`d27b6e5`, and the Mistral.rs base `8010b6a0`.
+`d27b6e5`, and the Mistral.rs base `8010b6a0`. The model smoke ran source
+`9f6acf2a`; the recovery gate ran source `805dc8f1`. Commit `4f096d7c` later
+recorded both results.
 
 - The model weight SHA-256 was
   `dd924a11b4c220f385b51ffa522daea7c9f3d850e31b162bb5661df483c6d3ee`.
@@ -105,14 +107,18 @@ source hashes and command output.
 Only decode attention uses Loom. Prefill and KV cache writes keep their existing
 Mistral.rs implementations.
 
+The current revision moves the runtime, completion FIFO, and provider counters
+from process-global state into `NormalPipeline`. Its `forward_inputs` path drains
+that model's completions after both successful and failed forwards. The
+historical records above do not qualify this lifecycle change.
+
 ## Qualification gaps
 
 Before this provider becomes a general engine option:
 
 - Carry a typed, linear runner authority through the model forward path.
-- Replace the process-global runtime and completion queue with model-owned
-  state.
-- Prevent raw forward calls from bypassing completion drain.
+- Qualify model-owned lifecycle and concurrent-drainer behavior on H20.
+- Define fail-closed behavior for a panic or abandoned model forward.
 - Model HND cache writes with explicit read-write storage guards.
 - Replace the sibling path dependency with an immutable published source.
 - Qualify Graph, speculative decode, tensor parallelism, multiple GPUs,

@@ -12,8 +12,8 @@
 use anyhow::{bail, Result};
 use candle_core::Device;
 use mistralrs::{
-    loom_paged_decode_stats, DeviceMapSetting, MemoryGpuConfig, ModelDType,
-    PagedAttentionMetaBuilder, RequestBuilder, TextMessageRole, TextMessages, TextModelBuilder,
+    DeviceMapSetting, MemoryGpuConfig, ModelDType, PagedAttentionMetaBuilder, RequestBuilder,
+    TextMessageRole, TextMessages, TextModelBuilder,
 };
 
 const DEFAULT_MODEL_PATH: &str = "/workspace/models/qwen2.5-1.5b-instruct";
@@ -66,7 +66,10 @@ async fn main() -> Result<()> {
         .first()
         .ok_or_else(|| anyhow::anyhow!("model returned no choices"))?;
     let stats = if loom_enabled {
-        let stats = loom_paged_decode_stats()?;
+        let stats = model
+            .loom_paged_decode_stats()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("model has no Loom paged-decode runtime"))?;
         if stats.submitted() == 0
             || stats.completed() != stats.submitted()
             || stats.failed() != 0

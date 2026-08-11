@@ -21,10 +21,7 @@ pub use flashinfer::{
 };
 pub use gather_kv::gather_kv_cache;
 #[cfg(feature = "loom-infer")]
-pub use loom::{
-    drain_loom_paged_decode_completions, loom_paged_decode, loom_paged_decode_stats,
-    LoomPagedDecodeDrainError, LoomPagedDecodeStats,
-};
+pub use loom::{LoomPagedDecodeDrainError, LoomPagedDecodeRuntime, LoomPagedDecodeStats};
 pub use mla::{concat_and_cache_mla, flashinfer_mla_decode, gather_mla_cache};
 pub use paged_attention::{paged_attention, reshape_and_cache};
 pub use scale_update::kv_scale_update;

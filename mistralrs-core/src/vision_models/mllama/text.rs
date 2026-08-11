@@ -201,6 +201,7 @@ impl MLlamaTextSelfAttention {
                     input_metadata,
                     &self.sdpa_params,
                     Some(ctx.flash_params()),
+                    ctx.paged_attention_runtime(),
                 )?,
                 None => {
                     if matches!(attention_mask, AttentionMask::None) {
@@ -217,6 +218,7 @@ impl MLlamaTextSelfAttention {
                         &input_metadata,
                         &self.sdpa_params,
                         Some(ctx.flash_params()),
+                        ctx.paged_attention_runtime(),
                     )?
                 }
             },

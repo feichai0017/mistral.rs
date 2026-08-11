@@ -240,6 +240,7 @@ impl Attention {
                     input_metadata,
                     &self.sdpa_params,
                     Some(flash_params),
+                    crate::paged_attention::PagedAttentionRuntime::native(),
                 )?,
                 None => {
                     // If we don't have metadata, we are most likely generating an imatrix so we don't want to populate that.
@@ -257,6 +258,7 @@ impl Attention {
                         &input_metadata,
                         &self.sdpa_params,
                         Some(flash_params),
+                        crate::paged_attention::PagedAttentionRuntime::native(),
                     )?
                 }
             },

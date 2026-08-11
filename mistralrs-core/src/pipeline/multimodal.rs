@@ -1333,6 +1333,7 @@ impl MultimodalPipeline {
             position_ids,
             Some((kv_cache.as_slice(), metadata)),
             flash_meta,
+            crate::paged_attention::PagedAttentionRuntime::native(),
         )
         .with_recurrent_batch_kind(RecurrentBatchKind::Decode)
         .with_recurrent_metadata(self.recurrent_metadata(RecurrentBatchKind::Decode));
@@ -1367,6 +1368,7 @@ impl MultimodalPipeline {
                     position_ids,
                     Some((kv_cache.as_slice(), graph_metadata)),
                     flash_meta,
+                    crate::paged_attention::PagedAttentionRuntime::native(),
                 )
                 .with_recurrent_batch_kind(RecurrentBatchKind::Decode)
                 .with_recurrent_metadata(self.recurrent_metadata(RecurrentBatchKind::Decode));
@@ -1506,6 +1508,7 @@ impl Pipeline for MultimodalPipeline {
                 .as_ref()
                 .map(|(kv_cache, meta)| (kv_cache.as_slice(), *meta)),
             &flash_meta,
+            crate::paged_attention::PagedAttentionRuntime::native(),
         )
         .with_recurrent_batch_kind(recurrent_batch_kind)
         .with_recurrent_metadata(self.recurrent_metadata(recurrent_batch_kind));

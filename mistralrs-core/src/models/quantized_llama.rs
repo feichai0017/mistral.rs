@@ -188,6 +188,7 @@ impl LayerWeights {
                     input_metadata,
                     &self.sdpa_params,
                     None,
+                    crate::paged_attention::PagedAttentionRuntime::native(),
                 )?
             }
             None => {

@@ -36,6 +36,7 @@ impl CalibrationDrive for NormalCalibrationDrive<'_> {
             &inputs.position_ids,
             None,
             &inputs.flash_meta,
+            crate::paged_attention::PagedAttentionRuntime::native(),
         );
         self.0.forward(&input, &mut ctx)?;
         Ok(())
@@ -61,6 +62,7 @@ impl CalibrationDrive for MultimodalCalibrationDrive<'_> {
             &inputs.position_ids,
             None,
             &inputs.flash_meta,
+            crate::paged_attention::PagedAttentionRuntime::native(),
         );
         // Text-only drive: the vision tower sees no calibration data, so its
         // layers quantize without imatrix weights.

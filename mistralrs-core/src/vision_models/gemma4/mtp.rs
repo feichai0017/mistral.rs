@@ -739,6 +739,7 @@ impl Gemma4MtpAttention {
                     input_metadata,
                     &self.sdpa_params,
                     Some(flash_params),
+                    crate::paged_attention::PagedAttentionRuntime::native(),
                 )?
             }
         };

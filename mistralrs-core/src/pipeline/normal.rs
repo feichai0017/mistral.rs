@@ -20,7 +20,11 @@ use crate::device_map::{self, DeviceMapper};
 use crate::distributed::{self, WorkerTransferData};
 use crate::kv_cache::{FullCacheManager, HybridCacheManager, NormalCacheManager};
 use crate::lora::Ordering;
-use crate::paged_attention::{calculate_cache_config, AttentionImplementation, CacheEngine};
+use crate::paged_attention::{
+    calculate_cache_config, AttentionImplementation, CacheEngine, PagedAttentionRuntime,
+};
+#[cfg(all(feature = "loom-infer", target_family = "unix"))]
+use crate::paged_attention::{AttentionBackendKind, LoomPagedDecodeRuntime, LoomPagedDecodeStats};
 use crate::pipeline::chat_template::{calculate_eos_tokens, GenerationConfig};
 #[cfg(feature = "cuda")]
 use crate::pipeline::cuda_graph::{
@@ -78,6 +82,8 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, trace, warn};
 
 pub struct NormalPipeline {
+    #[cfg(all(feature = "loom-infer", target_family = "unix"))]
+    loom_decode: Option<LoomPagedDecodeRuntime>,
     model: Box<dyn NormalModel + Send + Sync>,
     tokenizer: Arc<Tokenizer>,
     no_kv_cache: bool,
@@ -925,6 +931,25 @@ impl Loader for NormalLoader {
             (None, None)
         };
 
+        #[cfg(all(feature = "loom-infer", target_family = "unix"))]
+        let loom_decode = if model_metadata.attention_backend_kind() == AttentionBackendKind::Loom {
+            let cache_config = cache_config.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("Loom paged decode requires PagedAttention to be enabled")
+            })?;
+            if cache_config.block_size != 16 {
+                anyhow::bail!(
+                    "Loom paged decode requires block_size=16, got {}",
+                    cache_config.block_size
+                );
+            }
+            if dtype != DType::BF16 {
+                anyhow::bail!("Loom paged decode requires BF16 activation dtype, got {dtype:?}");
+            }
+            Some(LoomPagedDecodeRuntime::new())
+        } else {
+            None
+        };
+
         #[cfg(feature = "cuda")]
         super::synchronize_cuda_contexts(&device, pipeline_mapper.as_ref())?;
 
@@ -948,6 +973,8 @@ impl Loader for NormalLoader {
             paths.get_weight_filenames().to_vec()
         };
         Ok(Arc::new(Mutex::new(NormalPipeline {
+            #[cfg(all(feature = "loom-infer", target_family = "unix"))]
+            loom_decode,
             model,
             tokenizer: tokenizer.into(),
             no_kv_cache: self.no_kv_cache,
@@ -1261,6 +1288,7 @@ impl NormalPipeline {
             position_ids,
             Some((kv_cache.as_slice(), metadata)),
             flash_meta,
+            self.paged_attention_runtime(),
         )
         .with_recurrent_batch_kind(RecurrentBatchKind::Decode)
         .with_recurrent_metadata(self.recurrent_metadata(RecurrentBatchKind::Decode));
@@ -1291,6 +1319,7 @@ impl NormalPipeline {
                     position_ids,
                     Some((kv_cache.as_slice(), graph_metadata)),
                     flash_meta,
+                    self.paged_attention_runtime(),
                 )
                 .with_recurrent_batch_kind(RecurrentBatchKind::Decode)
                 .with_recurrent_metadata(self.recurrent_metadata(RecurrentBatchKind::Decode));
@@ -1323,6 +1352,32 @@ impl NormalPipeline {
         hybrid_cache.state_indices().cloned().map(|state_indices| {
             RecurrentMetadata::new(batch_kind, state_indices, state_indices_host)
         })
+    }
+
+    fn paged_attention_runtime(&self) -> PagedAttentionRuntime<'_> {
+        #[cfg(all(feature = "loom-infer", target_family = "unix"))]
+        if let Some(runtime) = self.loom_decode.as_ref() {
+            return PagedAttentionRuntime::Loom(runtime);
+        }
+        PagedAttentionRuntime::native()
+    }
+
+    fn finish_loom_forward<T>(&self, forward: candle_core::Result<T>) -> candle_core::Result<T> {
+        #[cfg(all(feature = "loom-infer", target_family = "unix"))]
+        if let Some(runtime) = self.loom_decode.as_ref() {
+            let drain = runtime
+                .drain()
+                .map_err(|error| candle_core::Error::msg(error.to_string()));
+            return match (forward, drain) {
+                (Ok(output), Ok(_)) => Ok(output),
+                (Err(error), Ok(_)) => Err(error),
+                (Ok(_), Err(error)) => Err(error),
+                (Err(forward_error), Err(drain_error)) => Err(candle_core::Error::msg(format!(
+                    "model forward failed: {forward_error}; Loom completion drain failed: {drain_error}"
+                ))),
+            };
+        }
+        forward
     }
 }
 
@@ -1365,101 +1420,113 @@ impl Pipeline for NormalPipeline {
         self.dynamic_lora.clone()
     }
 
+    #[cfg(all(feature = "loom-infer", target_family = "unix"))]
+    fn loom_paged_decode_stats(&self) -> candle_core::Result<Option<LoomPagedDecodeStats>> {
+        self.loom_decode
+            .as_ref()
+            .map(LoomPagedDecodeRuntime::stats)
+            .transpose()
+    }
+
     fn forward_inputs(
         &mut self,
         inputs: Box<dyn Any>,
         return_raw_logits: bool,
     ) -> Result<ForwardInputsResult, candle_core::Error> {
-        let ModelInputs {
-            input_ids,
-            input_ids_full,
-            seqlen_offsets,
-            seqlen_offsets_full,
-            context_lens,
-            position_ids,
-            paged_attn_meta,
-            flash_meta,
-            flash_meta_full,
-            recurrent_batch_kind,
-            adapter_leases,
-        } = *inputs.downcast().expect("Downcast failed.");
-        let lora_execution = super::resolve_lora_execution(
-            self.dynamic_lora.as_deref(),
-            &input_ids,
-            paged_attn_meta.as_ref(),
-            &flash_meta,
-            &adapter_leases,
-        )?;
-        let metadata = self.get_metadata();
-        let paged_attn_meta = match (&metadata.cache_engine, &paged_attn_meta) {
-            (Some(cache_engine), Some(meta)) => Some((cache_engine, meta)),
-            (Some(_), None) => {
-                // This can happen if Rust-side user code is wrong
-                candle_core::bail!("Forward step expected a PagedAttention input metadata. This was not provided, please ensure that the scheduler config is correctly configured for PagedAttention.")
-            }
-            (None, Some(_)) => {
-                // This should never happen but we handle it anyway
-                candle_core::bail!("Forward step got a PagedAttention input metadata but there is no cache engine. Please raise an issue.")
-            }
-            (None, None) => None,
-        };
-        let logits = match self.model.is_xlora() {
-            false => {
-                let paged_attn_meta = paged_attn_meta
-                    .as_ref()
-                    .map(|meta| (meta.0.get_kv_cache().clone(), meta.1.clone()));
+        let forward = (|| {
+            let ModelInputs {
+                input_ids,
+                input_ids_full,
+                seqlen_offsets,
+                seqlen_offsets_full,
+                context_lens,
+                position_ids,
+                paged_attn_meta,
+                flash_meta,
+                flash_meta_full,
+                recurrent_batch_kind,
+                adapter_leases,
+            } = *inputs.downcast().expect("Downcast failed.");
+            let lora_execution = super::resolve_lora_execution(
+                self.dynamic_lora.as_deref(),
+                &input_ids,
+                paged_attn_meta.as_ref(),
+                &flash_meta,
+                &adapter_leases,
+            )?;
+            let metadata = self.get_metadata();
+            let paged_attn_meta = match (&metadata.cache_engine, &paged_attn_meta) {
+                (Some(cache_engine), Some(meta)) => Some((cache_engine, meta)),
+                (Some(_), None) => {
+                    // This can happen if Rust-side user code is wrong
+                    candle_core::bail!("Forward step expected a PagedAttention input metadata. This was not provided, please ensure that the scheduler config is correctly configured for PagedAttention.")
+                }
+                (None, Some(_)) => {
+                    // This should never happen but we handle it anyway
+                    candle_core::bail!("Forward step got a PagedAttention input metadata but there is no cache engine. Please raise an issue.")
+                }
+                (None, None) => None,
+            };
+            let logits = match self.model.is_xlora() {
+                false => {
+                    let paged_attn_meta = paged_attn_meta
+                        .as_ref()
+                        .map(|meta| (meta.0.get_kv_cache().clone(), meta.1.clone()));
 
-                #[cfg(feature = "cuda")]
-                if lora_execution.is_none() && !return_raw_logits {
-                    match self.try_cuda_decode_graph_forward(
-                        &input_ids,
+                    #[cfg(feature = "cuda")]
+                    if lora_execution.is_none() && !return_raw_logits {
+                        match self.try_cuda_decode_graph_forward(
+                            &input_ids,
+                            &seqlen_offsets,
+                            &context_lens,
+                            &position_ids,
+                            paged_attn_meta.as_ref().map(|(a, b)| (a.clone(), b)),
+                            &flash_meta,
+                        ) {
+                            Ok(Some(logits)) => {
+                                return Ok(ForwardInputsResult::CausalGeneration { logits })
+                            }
+                            Ok(None) => {}
+                            Err(err) => self.disable_cuda_decode_graph(&err),
+                        }
+                    }
+
+                    let mut ctx = ModelForwardContext::new(
                         &seqlen_offsets,
                         &context_lens,
                         &position_ids,
-                        paged_attn_meta.as_ref().map(|(a, b)| (a.clone(), b)),
+                        paged_attn_meta
+                            .as_ref()
+                            .map(|(kv_cache, meta)| (kv_cache.as_slice(), meta)),
                         &flash_meta,
-                    ) {
-                        Ok(Some(logits)) => {
-                            return Ok(ForwardInputsResult::CausalGeneration { logits })
-                        }
-                        Ok(None) => {}
-                        Err(err) => self.disable_cuda_decode_graph(&err),
-                    }
+                        self.paged_attention_runtime(),
+                    )
+                    .with_recurrent_batch_kind(recurrent_batch_kind)
+                    .with_recurrent_metadata(self.recurrent_metadata(recurrent_batch_kind));
+                    mistralrs_quant::with_lora_execution(lora_execution, || {
+                        self.model.forward(&input_ids, &mut ctx)
+                    })?
                 }
-
-                let mut ctx = ModelForwardContext::new(
+                true => self.model.xlora_forward(
+                    &input_ids,
+                    input_ids_full.as_ref().unwrap_or(&input_ids),
                     &seqlen_offsets,
-                    &context_lens,
-                    &position_ids,
-                    paged_attn_meta
-                        .as_ref()
-                        .map(|(kv_cache, meta)| (kv_cache.as_slice(), meta)),
+                    seqlen_offsets_full.as_ref().unwrap_or(&seqlen_offsets),
+                    self.no_kv_cache,
+                    &self.non_granular_state,
+                    context_lens,
+                    position_ids,
                     &flash_meta,
-                )
-                .with_recurrent_batch_kind(recurrent_batch_kind)
-                .with_recurrent_metadata(self.recurrent_metadata(recurrent_batch_kind));
-                mistralrs_quant::with_lora_execution(lora_execution, || {
-                    self.model.forward(&input_ids, &mut ctx)
-                })?
+                    flash_meta_full.as_ref().unwrap_or(&flash_meta),
+                )?,
+            };
+            if return_raw_logits {
+                Ok(ForwardInputsResult::RawLogits { logits })
+            } else {
+                Ok(ForwardInputsResult::CausalGeneration { logits })
             }
-            true => self.model.xlora_forward(
-                &input_ids,
-                input_ids_full.as_ref().unwrap_or(&input_ids),
-                &seqlen_offsets,
-                seqlen_offsets_full.as_ref().unwrap_or(&seqlen_offsets),
-                self.no_kv_cache,
-                &self.non_granular_state,
-                context_lens,
-                position_ids,
-                &flash_meta,
-                flash_meta_full.as_ref().unwrap_or(&flash_meta),
-            )?,
-        };
-        if return_raw_logits {
-            Ok(ForwardInputsResult::RawLogits { logits })
-        } else {
-            Ok(ForwardInputsResult::CausalGeneration { logits })
-        }
+        })();
+        self.finish_loom_forward(forward)
     }
     fn attach_speculative(
         &mut self,

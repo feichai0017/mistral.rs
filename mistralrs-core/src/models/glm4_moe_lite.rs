@@ -362,6 +362,7 @@ impl Attention {
                                     input_metadata,
                                     &self.sdpa_params,
                                     Some(flash_params),
+                                    ctx.paged_attention_runtime(),
                                 )?
                                 .narrow(D::Minus1, 0, self.cfg.v_head_dim)?
                         }
@@ -389,6 +390,7 @@ impl Attention {
                                     &input_metadata,
                                     &self.sdpa_params,
                                     Some(flash_params),
+                                    ctx.paged_attention_runtime(),
                                 )?
                                 .narrow(D::Minus1, 0, self.cfg.v_head_dim)?
                         }

@@ -156,7 +156,7 @@ pub use mistralrs_mcp::{
 pub use mistralrs_quant::{IsqBits, IsqType};
 pub use mistralrs_sandbox::{NetworkMode, SandboxPolicy};
 #[cfg(all(feature = "loom-infer", target_family = "unix"))]
-pub use paged_attention::{loom_paged_decode_stats, LoomPagedDecodeStats};
+pub use paged_attention::LoomPagedDecodeStats;
 pub use paged_attention::{MemoryGpuConfig, PagedAttentionConfig, PagedCacheType};
 pub use pipeline::hf::{
     get_model_file, hf_home_dir, hf_hub_cache_dir, hf_token_path, is_hf_hub_offline,
@@ -2125,6 +2125,35 @@ impl MistralRs {
         } else {
             Err(MistralRsError::EnginePoisoned)
         }
+    }
+
+    /// Read paged-decode counters from the runtime owned by one loaded model.
+    #[cfg(all(feature = "loom-infer", target_family = "unix"))]
+    pub async fn loom_paged_decode_stats(
+        &self,
+        model_id: Option<&str>,
+    ) -> Result<Option<LoomPagedDecodeStats>, MistralRsError> {
+        let resolved_model_id = self.resolve_alias_or_default(model_id)?;
+        let pipeline = {
+            let engines = self
+                .engines
+                .read()
+                .map_err(|_| MistralRsError::EnginePoisoned)?;
+            let engine = engines
+                .get(&resolved_model_id)
+                .ok_or_else(|| MistralRsError::ModelNotFound(resolved_model_id.clone()))?;
+            Arc::clone(&engine.reboot_state.pipeline)
+        };
+
+        pipeline
+            .lock()
+            .await
+            .loom_paged_decode_stats()
+            .map_err(|err| {
+                MistralRsError::Other(format!(
+                    "failed to read Loom paged-decode stats for model `{resolved_model_id}`: {err}"
+                ))
+            })
     }
 
     /// Get model category for a specific model. If model_id is None, uses default engine.

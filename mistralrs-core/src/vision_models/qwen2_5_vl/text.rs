@@ -247,6 +247,7 @@ impl Attention {
                     input_metadata,
                     &self.sdpa_params,
                     Some(flash_params),
+                    crate::paged_attention::PagedAttentionRuntime::native(),
                 )?,
                 None => {
                     let input_metadata = PagedAttentionInputMetadata::dummy(q.device())?;
@@ -261,6 +262,7 @@ impl Attention {
                         &input_metadata,
                         &self.sdpa_params,
                         Some(flash_params),
+                        crate::paged_attention::PagedAttentionRuntime::native(),
                     )?
                 }
             },

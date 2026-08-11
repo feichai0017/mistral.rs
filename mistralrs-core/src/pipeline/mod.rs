@@ -28,7 +28,7 @@ pub use super::diffusion_models::DiffusionGenerationParams;
 use crate::amoe::{AnyMoeConfig, AnyMoeExpertType, AnyMoeTrainingInputs, AnyMoeTrainingResult};
 use crate::device_map::DeviceMapper;
 use crate::layers_masker::PastKvLenCache;
-use crate::paged_attention::{CacheConfig, CacheEngine, ModelConfigLike};
+use crate::paged_attention::{CacheConfig, CacheEngine, ModelConfigLike, PagedAttentionRuntime};
 use crate::prefix_cacher::PrefixCacheManagerV2;
 use crate::PagedAttentionConfig;
 pub use amoe::{AnyMoeLoader, AnyMoePipeline};
@@ -417,6 +417,7 @@ pub(crate) struct ModelForwardContext<'a> {
     context_lens: &'a [(usize, usize)],
     position_ids: &'a [usize],
     flash_params: &'a FlashParams,
+    paged_attention_runtime: PagedAttentionRuntime<'a>,
     recurrent_metadata: Option<RecurrentMetadata>,
     recurrent_batch_kind: Option<RecurrentBatchKind>,
     requires_full_prefill_queries: bool,
@@ -430,6 +431,7 @@ impl<'a> ModelForwardContext<'a> {
         position_ids: &'a [usize],
         metadata: Option<(&'a [(Tensor, Tensor)], &'a PagedAttentionInputMetadata)>,
         flash_params: &'a FlashParams,
+        paged_attention_runtime: PagedAttentionRuntime<'a>,
     ) -> Self {
         Self {
             cache: ForwardCache::from_paged(metadata),
@@ -438,6 +440,7 @@ impl<'a> ModelForwardContext<'a> {
             context_lens,
             position_ids,
             flash_params,
+            paged_attention_runtime,
             recurrent_metadata: None,
             recurrent_batch_kind: None,
             requires_full_prefill_queries: false,
@@ -450,6 +453,7 @@ impl<'a> ModelForwardContext<'a> {
         context_lens: &'a [(usize, usize)],
         position_ids: &'a [usize],
         flash_params: &'a FlashParams,
+        paged_attention_runtime: PagedAttentionRuntime<'a>,
     ) -> Self {
         Self {
             cache,
@@ -458,6 +462,7 @@ impl<'a> ModelForwardContext<'a> {
             context_lens,
             position_ids,
             flash_params,
+            paged_attention_runtime,
             recurrent_metadata: None,
             recurrent_batch_kind: None,
             requires_full_prefill_queries: false,
@@ -528,6 +533,10 @@ impl<'a> ModelForwardContext<'a> {
 
     pub(crate) fn flash_params(&self) -> &FlashParams {
         self.flash_params
+    }
+
+    pub(crate) fn paged_attention_runtime(&self) -> PagedAttentionRuntime<'a> {
+        self.paged_attention_runtime
     }
 
     pub(crate) fn recurrent_metadata(&self) -> Option<&RecurrentMetadata> {
@@ -1234,34 +1243,18 @@ pub trait Pipeline:
         None
     }
 
+    #[cfg(all(feature = "loom-infer", target_family = "unix"))]
+    fn loom_paged_decode_stats(
+        &self,
+    ) -> candle_core::Result<Option<crate::paged_attention::LoomPagedDecodeStats>> {
+        Ok(None)
+    }
+
     fn forward_inputs(
         &mut self,
         inputs: Box<dyn Any>,
         return_raw_logits: bool,
     ) -> Result<ForwardInputsResult, candle_core::Error>;
-
-    fn forward_inputs_and_drain_loom(
-        &mut self,
-        inputs: Box<dyn Any>,
-        return_raw_logits: bool,
-    ) -> Result<ForwardInputsResult, candle_core::Error> {
-        let forward = self.forward_inputs(inputs, return_raw_logits);
-        #[cfg(all(feature = "loom-infer", target_family = "unix"))]
-        {
-            let drain = mistralrs_paged_attn::drain_loom_paged_decode_completions()
-                .map_err(|error| candle_core::Error::msg(error.to_string()));
-            match (forward, drain) {
-                (Ok(output), Ok(_)) => Ok(output),
-                (Err(error), Ok(_)) => Err(error),
-                (Ok(_), Err(error)) => Err(error),
-                (Err(forward_error), Err(drain_error)) => Err(candle_core::Error::msg(format!(
-                    "model forward failed: {forward_error}; Loom completion drain failed: {drain_error}"
-                ))),
-            }
-        }
-        #[cfg(not(all(feature = "loom-infer", target_family = "unix")))]
-        forward
-    }
 
     fn attach_speculative(
         &mut self,
@@ -1401,7 +1394,7 @@ pub trait Pipeline:
                         && sampling::can_sample_batch_cuda(input_seqs);
                     let start = Instant::now();
                     let raw_logits = self
-                        .forward_inputs_and_drain_loom(inputs, return_raw_logits)?
+                        .forward_inputs(inputs, return_raw_logits)?
                         .into_cpu_for_batch(input_seqs.len(), preserve_causal_generation)?;
                     let end = Instant::now();
                     exec_duration += end.duration_since(start);
@@ -1838,7 +1831,7 @@ pub trait Pipeline:
                         }
                         let start = Instant::now();
                         let raw_logits = self
-                            .forward_inputs_and_drain_loom(inputs, return_raw_logits)?
+                            .forward_inputs(inputs, return_raw_logits)?
                             .into_cpu_for_batch(input_seqs.len(), preserve_causal_generation)?;
                         let end = Instant::now();
                         exec_duration += end.duration_since(start);
@@ -2206,6 +2199,7 @@ mod tests {
             &context_lens,
             &position_ids,
             &flash_params,
+            crate::paged_attention::PagedAttentionRuntime::native(),
         );
 
         let error = context.text_positions(&Device::Cpu, 1).unwrap_err();

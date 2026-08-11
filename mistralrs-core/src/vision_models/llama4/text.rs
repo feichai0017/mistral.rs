@@ -485,6 +485,7 @@ impl CausalSelfAttention {
                     input_metadata,
                     sdpa_params,
                     Some(flash_params),
+                    ctx.paged_attention_runtime(),
                 )?,
                 None => {
                     // If we don't have metadata, we are most likely generating an imatrix so we don't want to populate that.
@@ -502,6 +503,7 @@ impl CausalSelfAttention {
                         &input_metadata,
                         sdpa_params,
                         Some(flash_params),
+                        ctx.paged_attention_runtime(),
                     )?
                 }
             },

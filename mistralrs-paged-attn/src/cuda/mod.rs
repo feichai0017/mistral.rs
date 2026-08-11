@@ -11,7 +11,4 @@ pub use backend::{
     FlashInferDecodeScratch,
 };
 #[cfg(feature = "loom-infer")]
-pub use backend::{
-    drain_loom_paged_decode_completions, loom_paged_decode, loom_paged_decode_stats,
-    LoomPagedDecodeDrainError, LoomPagedDecodeStats,
-};
+pub use backend::{LoomPagedDecodeDrainError, LoomPagedDecodeRuntime, LoomPagedDecodeStats};

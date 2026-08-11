@@ -101,6 +101,29 @@ impl Model {
         self.runner.find_file(id)
     }
 
+    /// Read paged-decode counters from the runtime owned by the default model.
+    #[cfg(all(feature = "loom-infer", target_family = "unix"))]
+    pub async fn loom_paged_decode_stats(
+        &self,
+    ) -> crate::error::Result<Option<LoomPagedDecodeStats>> {
+        self.runner
+            .loom_paged_decode_stats(None)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Read paged-decode counters from the runtime owned by a selected model.
+    #[cfg(all(feature = "loom-infer", target_family = "unix"))]
+    pub async fn loom_paged_decode_stats_with_model(
+        &self,
+        model_id: &str,
+    ) -> crate::error::Result<Option<LoomPagedDecodeStats>> {
+        self.runner
+            .loom_paged_decode_stats(Some(model_id))
+            .await
+            .map_err(Into::into)
+    }
+
     /// Load a local LoRA adapter directory under a new alias.
     pub async fn load_lora_adapter(
         &self,

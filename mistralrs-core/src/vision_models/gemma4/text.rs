@@ -609,6 +609,7 @@ impl Attention {
                                 input_metadata,
                                 &self.sdpa_params,
                                 flash_params,
+                                crate::paged_attention::PagedAttentionRuntime::native(),
                             )?
                         } else {
                             // Non-shared: standard paged attention with raw k,v.
@@ -622,6 +623,7 @@ impl Attention {
                                 input_metadata,
                                 &self.sdpa_params,
                                 flash_params,
+                                crate::paged_attention::PagedAttentionRuntime::native(),
                             )?
                         }
                     }
@@ -638,6 +640,7 @@ impl Attention {
                             &input_metadata,
                             &self.sdpa_params,
                             flash_params,
+                            crate::paged_attention::PagedAttentionRuntime::native(),
                         )?
                     }
                 }

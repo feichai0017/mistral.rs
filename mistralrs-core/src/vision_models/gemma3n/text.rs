@@ -492,6 +492,7 @@ impl Attention {
                         input_metadata,
                         &self.sdpa_params,
                         ctx.flash_params,
+                        crate::paged_attention::PagedAttentionRuntime::native(),
                     )?,
                 Some(((key_cache, value_cache), input_metadata)) => paged_attn.forward(
                     &q,
@@ -503,6 +504,7 @@ impl Attention {
                     input_metadata,
                     &self.sdpa_params,
                     ctx.flash_params,
+                    crate::paged_attention::PagedAttentionRuntime::native(),
                 )?,
                 None if is_shared => {
                     candle_core::bail!("Gemma 3n shared KV attention is missing paged metadata")
@@ -522,6 +524,7 @@ impl Attention {
                         &input_metadata,
                         &self.sdpa_params,
                         ctx.flash_params,
+                        crate::paged_attention::PagedAttentionRuntime::native(),
                     )?
                 }
             },

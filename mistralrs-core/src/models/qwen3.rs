@@ -235,6 +235,7 @@ impl Attention {
                     input_metadata,
                     &self.sdpa_params,
                     Some(ctx.flash_params()),
+                    ctx.paged_attention_runtime(),
                 )?,
                 None => {
                     // If we don't have metadata, we are most likely generating an imatrix so we don't want to populate that.
@@ -252,6 +253,7 @@ impl Attention {
                         &input_metadata,
                         &self.sdpa_params,
                         Some(ctx.flash_params()),
+                        ctx.paged_attention_runtime(),
                     )?
                 }
             },

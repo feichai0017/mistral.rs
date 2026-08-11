@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 
 use candle_core::{DType, Device, DeviceLocation, Result, Tensor};
-#[cfg(all(feature = "loom-infer", target_family = "unix"))]
-use mistralrs_paged_attn::loom_paged_decode;
 #[cfg(all(feature = "cuda", target_family = "unix"))]
 use mistralrs_paged_attn::{
     flashinfer_decode, gather_kv_cache_flashinfer, reshape_and_cache_flashinfer,
@@ -21,7 +19,7 @@ use crate::{
     paged_attention::{
         block_aligned_sliding_window_start,
         plan::{DecodePlan, DecodePlanInput, PrefixPrefillPlan, PrefixPrefillPlanInput},
-        KvCacheLayout, _PAD_SLOT_ID,
+        KvCacheLayout, PagedAttentionRuntime, _PAD_SLOT_ID,
     },
     pipeline::text_models_inputs_processor::{
         FlashKMeta, FlashParams, PagedAttentionInputMetadata,
@@ -1332,6 +1330,7 @@ impl PagedAttention {
         key_cache: &mut Option<Tensor>,
         value_cache: &mut Option<Tensor>,
         write_cache: bool,
+        runtime: PagedAttentionRuntime<'_>,
     ) -> Result<Tensor> {
         let query = if ctx.dims.seq_len > 1 {
             tensors.query.transpose(1, 2)?.reshape((
@@ -1425,7 +1424,7 @@ impl PagedAttention {
                 self.run_standard_paged_decode(ctx, &query, key_cache_ref, value_cache_ref, &dev)
             }
             DecodePlan::Loom => {
-                self.run_loom_decode(ctx, &query, key_cache_ref, value_cache_ref, &dev)
+                self.run_loom_decode(ctx, &query, key_cache_ref, value_cache_ref, &dev, runtime)
             }
         }
     }
@@ -1638,6 +1637,7 @@ impl PagedAttention {
         key_cache: &Tensor,
         value_cache: &Tensor,
         dev: &DeviceLocation,
+        runtime: PagedAttentionRuntime<'_>,
     ) -> Result<Tensor> {
         #[cfg(all(feature = "loom-infer", target_family = "unix"))]
         {
@@ -1672,12 +1672,13 @@ impl PagedAttention {
                 })
             })?;
 
+            let runtime = runtime.require_loom()?;
             // SAFETY: NormalPipeline serializes each step under exclusive
             // pipeline/model-runner access. The admitted Loom mode is one GPU
             // on one ordinary stream, and its Tensor/cache aliases are not
             // used concurrently before the completion drain.
             unsafe {
-                loom_paged_decode(
+                runtime.enqueue_paged_decode(
                     query,
                     key_cache,
                     value_cache,
@@ -1690,7 +1691,7 @@ impl PagedAttention {
         }
         #[cfg(not(all(feature = "loom-infer", target_family = "unix")))]
         {
-            let _ = (ctx, query, key_cache, value_cache, dev);
+            let _ = (ctx, query, key_cache, value_cache, dev, runtime);
             candle_core::bail!("Loom paged decode requires the loom-infer feature on CUDA Unix")
         }
     }
@@ -1708,6 +1709,7 @@ impl PagedAttention {
         sdpa_params: &SdpaParams,
         flash_params: Option<&FlashParams>,
         write_cache: bool,
+        runtime: PagedAttentionRuntime<'_>,
     ) -> Result<Tensor> {
         let tensors = PagedForwardTensors {
             query,
@@ -1803,13 +1805,20 @@ impl PagedAttention {
         {
             return Ok(out);
         }
-        self.run_decode(&ctx, tensors, &mut key_cache, &mut value_cache, write_cache)
+        self.run_decode(
+            &ctx,
+            tensors,
+            &mut key_cache,
+            &mut value_cache,
+            write_cache,
+            runtime,
+        )
     }
 
     /// Standard paged attention forward: writes key/value to cache, then
     /// runs attention (Sdpa for prompt, paged kernel for decode).
     #[allow(clippy::too_many_arguments)]
-    pub fn forward(
+    pub(crate) fn forward(
         &self,
         query: &Tensor,
         key: &Tensor,
@@ -1820,6 +1829,7 @@ impl PagedAttention {
         input_metadata: &PagedAttentionInputMetadata,
         sdpa_params: &SdpaParams,
         flash_params: Option<&FlashParams>,
+        runtime: PagedAttentionRuntime<'_>,
     ) -> Result<Tensor> {
         self.forward_impl(
             query,
@@ -1832,6 +1842,7 @@ impl PagedAttention {
             sdpa_params,
             flash_params,
             true,
+            runtime,
         )
     }
 
@@ -1840,7 +1851,7 @@ impl PagedAttention {
     /// already written its K,V.  On prompt the donor's cached K,V are
     /// gathered; on decode the paged-attention kernel reads them directly.
     #[allow(clippy::too_many_arguments)]
-    pub fn forward_donor_cache(
+    pub(crate) fn forward_donor_cache(
         &self,
         query: &Tensor,
         key_cache: &Tensor,
@@ -1849,6 +1860,7 @@ impl PagedAttention {
         input_metadata: &PagedAttentionInputMetadata,
         sdpa_params: &SdpaParams,
         flash_params: Option<&FlashParams>,
+        runtime: PagedAttentionRuntime<'_>,
     ) -> Result<Tensor> {
         // key/value are unused (donor's cache already has them), but
         // forward_impl needs tensors for shape queries. Reuse query as
@@ -1864,6 +1876,7 @@ impl PagedAttention {
             sdpa_params,
             flash_params,
             false,
+            runtime,
         )
     }
 }
