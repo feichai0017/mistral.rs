@@ -12,6 +12,11 @@ categories.workspace = true
 license.workspace = true
 homepage.workspace = true
 
+[[bin]]
+name = "loom_adapter_h20"
+path = "src/bin/loom_adapter_h20.rs"
+required-features = ["loom-infer"]
+
 [dependencies]
 candle-core.workspace = true
 half.workspace = true

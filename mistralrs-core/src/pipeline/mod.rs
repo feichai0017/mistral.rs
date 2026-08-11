@@ -1248,7 +1248,8 @@ pub trait Pipeline:
         let forward = self.forward_inputs(inputs, return_raw_logits);
         #[cfg(all(feature = "loom-infer", target_family = "unix"))]
         {
-            let drain = mistralrs_paged_attn::drain_loom_paged_decode_completions();
+            let drain = mistralrs_paged_attn::drain_loom_paged_decode_completions()
+                .map_err(|error| candle_core::Error::msg(error.to_string()));
             match (forward, drain) {
                 (Ok(output), Ok(_)) => Ok(output),
                 (Err(error), Ok(_)) => Err(error),

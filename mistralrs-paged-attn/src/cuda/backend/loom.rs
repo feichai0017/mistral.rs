@@ -10,9 +10,9 @@ use loom_infer_cuda::attention::{
     Bf16PagedBatchDecodeArgs, Bf16PagedBatchDecodePlan, DecodeProvider,
 };
 use loom_infer_cuda::interop::{
-    EngineAlgorithm, EngineCommand, EngineCommandCompletion, EngineEnqueueCause,
-    EngineExecutionTrace, EngineExternalBindings, EngineInteropQueue, EngineOperator,
-    ExternalCudaStream, StreamOrderedEngineAuthority,
+    EngineAlgorithm, EngineCommand, EngineCommandCompletion, EngineCommandCompletionError,
+    EngineCommandFailure, EngineEnqueueCause, EngineExecutionTrace, EngineExternalBindings,
+    EngineInteropQueue, EngineOperator, ExternalCudaStream, StreamOrderedEngineAuthority,
 };
 use loom_infer_cuda::memory::{ReadDeviceRegion, ReadWriteDeviceRegion};
 use std::any::Any;
@@ -361,6 +361,54 @@ impl LoomPagedDecodeStats {
         self.completed = self.completed.saturating_add(1);
         if failed {
             self.failed = self.failed.saturating_add(1);
+        }
+    }
+}
+
+/// An error returned while draining queued Loom decode completions.
+#[derive(Debug, thiserror::Error)]
+pub enum LoomPagedDecodeDrainError {
+    #[error("Loom runtime registry is poisoned after {drained} completions settled")]
+    RegistryPoisoned { drained: usize },
+    #[error(
+        "Loom decode completion at FIFO position {failed_position} failed after {drained} completions settled: {source}"
+    )]
+    Completion {
+        drained: usize,
+        failed_position: usize,
+        #[source]
+        source: EngineCommandCompletionError,
+    },
+}
+
+impl LoomPagedDecodeDrainError {
+    pub const fn drained(&self) -> usize {
+        match self {
+            Self::RegistryPoisoned { drained } | Self::Completion { drained, .. } => *drained,
+        }
+    }
+
+    /// Returns the one-based position of the first failed completion.
+    pub const fn failed_position(&self) -> Option<usize> {
+        match self {
+            Self::RegistryPoisoned { .. } => None,
+            Self::Completion {
+                failed_position, ..
+            } => Some(*failed_position),
+        }
+    }
+
+    pub const fn cause(&self) -> Option<&EngineCommandFailure> {
+        match self {
+            Self::RegistryPoisoned { .. } => None,
+            Self::Completion { source, .. } => Some(source.cause()),
+        }
+    }
+
+    pub const fn trace(&self) -> Option<&EngineExecutionTrace> {
+        match self {
+            Self::RegistryPoisoned { .. } => None,
+            Self::Completion { source, .. } => Some(source.trace()),
         }
     }
 }
@@ -725,28 +773,35 @@ pub unsafe fn loom_paged_decode(
 }
 
 /// Waits for all queued Loom decode commands in submission order.
-pub fn drain_loom_paged_decode_completions() -> Result<usize> {
+pub fn drain_loom_paged_decode_completions() -> std::result::Result<usize, LoomPagedDecodeDrainError>
+{
     let mut drained = 0;
     let mut first_error = None;
     loop {
         let pending = {
-            let mut registry = lock_registry()?;
+            let mut registry = lock_registry_for_drain(drained)?;
             registry.pending.pop_front()
         };
         let Some(pending) = pending else {
             return match first_error {
-                Some(error) => Err(error),
+                Some((failed_position, source)) => Err(LoomPagedDecodeDrainError::Completion {
+                    drained,
+                    failed_position,
+                    source,
+                }),
                 None => Ok(drained),
             };
         };
         let result = pending.completion.wait();
-        lock_registry()?.stats.record_completion(result.is_err());
-        if let Err(error) = result {
+        drained += 1;
+        lock_registry_for_drain(drained)?
+            .stats
+            .record_completion(result.is_err());
+        if let Err(source) = result {
             if first_error.is_none() {
-                first_error = Some(loom_external_error("Loom decode completion failed", error));
+                first_error = Some((drained, source));
             }
         }
-        drained += 1;
     }
 }
 
@@ -884,6 +939,14 @@ fn lock_registry() -> Result<MutexGuard<'static, RuntimeRegistry>> {
     registry()
         .lock()
         .map_err(|_| loom_error("Loom runtime registry is poisoned"))
+}
+
+fn lock_registry_for_drain(
+    drained: usize,
+) -> std::result::Result<MutexGuard<'static, RuntimeRegistry>, LoomPagedDecodeDrainError> {
+    registry()
+        .lock()
+        .map_err(|_| LoomPagedDecodeDrainError::RegistryPoisoned { drained })
 }
 
 fn loom_external_error(context: &str, error: impl std::fmt::Display) -> Error {

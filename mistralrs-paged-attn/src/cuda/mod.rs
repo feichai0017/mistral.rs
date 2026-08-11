@@ -13,5 +13,5 @@ pub use backend::{
 #[cfg(feature = "loom-infer")]
 pub use backend::{
     drain_loom_paged_decode_completions, loom_paged_decode, loom_paged_decode_stats,
-    LoomPagedDecodeStats,
+    LoomPagedDecodeDrainError, LoomPagedDecodeStats,
 };
