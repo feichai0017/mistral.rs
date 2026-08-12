@@ -19,6 +19,9 @@ use candle_core::{
     Tensor,
 };
 
+#[cfg(feature = "gemv-bench")]
+use candle_core::cuda::{cudarc::driver::CudaSlice, WrapErr};
+
 #[cfg(feature = "cuda")]
 use crate::utils::{get_cuda_device, slice_ptr};
 
@@ -52,6 +55,95 @@ impl GemvController {
 pub static GEMV_CONTROLLER: LazyLock<GemvController> = LazyLock::new(|| GemvController {
     enabled: AtomicBool::new(true),
 });
+
+#[cfg(feature = "gemv-bench")]
+#[doc(hidden)]
+pub struct Bf16GemvBenchmarkPlan {
+    activation: Tensor,
+    weight: Tensor,
+    output: CudaSlice<bf16>,
+    device: CudaDevice,
+    m: usize,
+    k: usize,
+}
+
+#[cfg(feature = "gemv-bench")]
+impl Bf16GemvBenchmarkPlan {
+    pub fn new(activation: Tensor, weight: Tensor) -> Result<Self> {
+        if activation.dtype() != DType::BF16 || weight.dtype() != DType::BF16 {
+            candle_core::bail!("BF16 GEMV benchmark requires BF16 tensors");
+        }
+        if !activation.is_contiguous() || !weight.is_contiguous() {
+            candle_core::bail!("BF16 GEMV benchmark requires contiguous tensors");
+        }
+        let (batch_size, k) = activation.dims2()?;
+        let (m, weight_k) = weight.dims2()?;
+        if batch_size != 1 || k != weight_k || !k.is_multiple_of(2) {
+            candle_core::bail!(
+                "BF16 GEMV benchmark requires activation [1,K], weight [M,K], and even K"
+            );
+        }
+        if m > i32::MAX as usize || k > i32::MAX as usize {
+            candle_core::bail!("BF16 GEMV benchmark dimensions exceed the CUDA kernel ABI");
+        }
+        let device = get_cuda_device(&activation)?.clone();
+        if device.id() != get_cuda_device(&weight)?.id() {
+            candle_core::bail!("BF16 GEMV benchmark tensors must share one CUDA device");
+        }
+        let output = unsafe { device.alloc::<bf16>(m)? };
+        Ok(Self {
+            activation,
+            weight,
+            output,
+            device,
+            m,
+            k,
+        })
+    }
+
+    pub fn enqueue(&mut self) -> Result<()> {
+        let (weight_storage, weight_layout) = self.weight.storage_and_layout();
+        let Storage::Cuda(weight_storage) = &*weight_storage else {
+            candle_core::bail!("BF16 GEMV benchmark weight must use CUDA storage");
+        };
+        let (weight_ptr, _weight_guard) = slice_ptr(
+            weight_storage.as_cuda_slice::<bf16>()?,
+            weight_layout.start_offset(),
+        );
+
+        let (activation_storage, activation_layout) = self.activation.storage_and_layout();
+        let Storage::Cuda(activation_storage) = &*activation_storage else {
+            candle_core::bail!("BF16 GEMV benchmark activation must use CUDA storage");
+        };
+        let (activation_ptr, _activation_guard) = slice_ptr(
+            activation_storage.as_cuda_slice::<bf16>()?,
+            activation_layout.start_offset(),
+        );
+
+        let stream = self.device.cuda_stream();
+        let (output_ptr, _output_guard) = self.output.device_ptr_mut(&stream);
+        unsafe {
+            ffi::launch_gemv_bf16(
+                weight_ptr as *const bf16,
+                activation_ptr as *const bf16,
+                std::ptr::null(),
+                output_ptr as *mut bf16,
+                self.m as i32,
+                self.k as i32,
+                1,
+                false,
+                stream.cu_stream() as *mut std::ffi::c_void,
+            );
+        }
+        Ok(())
+    }
+
+    pub fn output(&self) -> Result<Vec<bf16>> {
+        let values = self.device.clone_dtoh(&self.output)?;
+        self.device.cuda_stream().synchronize().w()?;
+        Ok(values)
+    }
+}
 
 /// Check if custom GEMV should be used instead of cuBLAS.
 ///
