@@ -13,8 +13,8 @@ license.workspace = true
 homepage.workspace = true
 
 [[bin]]
-name = "oxide_adapter_h20"
-path = "src/bin/oxide_adapter_h20.rs"
+name = "oxide_adapter_gate"
+path = "src/bin/oxide_adapter_gate.rs"
 required-features = ["oxide-infer"]
 
 [dependencies]

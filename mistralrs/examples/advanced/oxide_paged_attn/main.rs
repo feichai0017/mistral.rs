@@ -33,7 +33,7 @@ async fn main() -> Result<()> {
     let model_path =
         std::env::var("OXIDE_MODEL_PATH").unwrap_or_else(|_| DEFAULT_MODEL_PATH.to_string());
     let device = Device::new_cuda_with_stream(0)?;
-    let model = TextModelBuilder::new(model_path)
+    let model = TextModelBuilder::new(&model_path)
         .with_dtype(ModelDType::BF16)
         .with_device(device)
         .with_device_mapping(DeviceMapSetting::dummy())
@@ -85,14 +85,12 @@ async fn main() -> Result<()> {
     };
 
     println!("validation_mode={validation_mode}");
+    println!("model_path={model_path}");
     println!(
         "model_response={}",
         choice.message.content.as_deref().unwrap_or("")
     );
-    println!(
-        "model_usage=prompt:{} completion:{}",
-        response.usage.prompt_tokens, response.usage.completion_tokens
-    );
+    println!("model_usage={}", serde_json::to_string(&response.usage)?);
     println!(
         "token_logprobs={}",
         serde_json::to_string(&choice.logprobs)?

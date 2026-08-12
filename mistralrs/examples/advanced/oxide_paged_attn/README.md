@@ -6,16 +6,10 @@ provider.
 
 ## Checkout
 
-Keep both repositories under one parent directory:
-
-```text
-workspace/
-|-- oxide-infer/  # d27b6e5
-`-- mistral.rs/  # this overlay, based on 8010b6a0
-```
-
-The optional Cargo dependencies use `../oxide-infer`. A standalone Mistral.rs
-checkout cannot resolve the `oxide-infer` feature.
+The optional Cargo dependencies resolve Oxide Infer from the immutable Git
+commit `02faf27b116f05831dca7261fb605be13faa2df4`. A standalone Mistral.rs
+checkout can therefore build the `oxide-infer` feature without a sibling
+Oxide Infer checkout.
 
 ## Admitted contract
 
@@ -59,9 +53,33 @@ Run the adapter recovery gate from the paged-attention crate:
 
 ```bash
 cd mistralrs-paged-attn
-cargo +nightly-2026-04-03 oxide run --bin oxide_adapter_h20 \
+cargo +nightly-2026-04-03 oxide run --bin oxide_adapter_gate \
   --features oxide-infer --arch sm_90
 ```
+
+## Current source requalification
+
+The 2026-08-12 run used the immutable Oxide Infer source above and exercised
+two local BF16 model configurations on one GPU:
+
+- Qwen2.5-1.5B-Instruct, 12 query heads, 2 KV heads, GQA group size 6.
+- Qwen2.5-7B-Instruct, 28 query heads, 4 KV heads, GQA group size 7.
+
+For each model, Oxide completed 196 of 196 paged-decode operator submissions
+with no provider error. Oxide and the default Mistral.rs provider emitted the
+same eight selected token strings and decoded text. The adapter recorded HND,
+the 8-warp token-parallel algorithm, nine external regions, and no
+adapter-issued device-to-device copy.
+
+The generic adapter recovery gate completed seven commands, reported one typed
+`PageIndexOutOfRange` failure at FIFO position two, and reused the same runtime.
+All six valid outputs matched the CPU oracle exactly.
+
+See the [current-source requalification record](./h20-current-oxide-02faf27-two-model-requalification-20260812.json)
+for source and model hashes, raw selected-token log probabilities, command
+outcomes, and excluded claims. The recorded request timings are observations,
+not a performance comparison: the runs did not use a repeated, counterbalanced
+benchmark protocol and CUDA driver JIT caching differed between runs.
 
 ## Historical H20 results
 
@@ -137,6 +155,6 @@ Before this provider becomes a general engine option:
 - Carry a typed, linear runner authority through the model forward path.
 - Define fail-closed behavior for a panic or abandoned model forward.
 - Model HND cache writes with explicit read-write storage guards.
-- Replace the sibling path dependency with an immutable published source.
+- Promote the immutable Git pin to a released crate dependency when available.
 - Qualify Graph, speculative decode, tensor parallelism, multiple GPUs,
   multiple streams, multiple models, and larger batches.
