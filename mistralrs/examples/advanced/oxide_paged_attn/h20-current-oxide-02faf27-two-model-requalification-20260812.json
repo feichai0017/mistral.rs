@@ -20,9 +20,7 @@
     }
   },
   "hardware": {
-    "host": "g340-cd51-7804-db9d-6be9-5485-3305",
     "gpu": "NVIDIA H20",
-    "gpu_uuid": "GPU-3a35e57b-fc54-5620-56ee-deaf5a9c40d3",
     "compute_capability": "9.0",
     "memory_total_mib": 97871,
     "driver": "535.161.08",
@@ -33,8 +31,8 @@
     "cargo": "1.96.0-nightly (888f67534 2026-03-30)"
   },
   "execution_environment": {
-    "working_directory": "/workspace/mistral.rs",
-    "cargo_home": "/workspace/.cargo-online",
+    "working_directory": "<mistral.rs-checkout>",
+    "cargo_home": "<cargo-home>",
     "cuda_path_prefix": "/usr/local/cuda/bin",
     "cudaforge_threads": 2,
     "cargo_build_jobs": 2,
@@ -54,7 +52,7 @@
   "models": [
     {
       "name": "Qwen2.5-1.5B-Instruct",
-      "path": "/workspace/models/qwen2.5-1.5b-instruct",
+      "path": "<model-root>/qwen2.5-1.5b-instruct",
       "files_sha256": {
         "config.json": "98d2ff8cc47488d08a2b0b3acf4eb99ef210779b42bd48605f6b8e36acdbf670",
         "model.safetensors": "dd924a11b4c220f385b51ffa522daea7c9f3d850e31b162bb5661df483c6d3ee",
@@ -170,7 +168,7 @@
     },
     {
       "name": "Qwen2.5-7B-Instruct",
-      "path": "/workspace/models/qwen2.5-7b-instruct",
+      "path": "<model-root>/qwen2.5-7b-instruct",
       "files_sha256": {
         "config.json": "7463bb0ea78315365e6c6b74de4e73bbcc8359dfb0c5a737584e077d42c0b03c",
         "model-00001-of-00004.safetensors": "a1333e6293854747c481288ea83b348226af178dd565c49b6f9495ba1966aba7",
@@ -347,47 +345,47 @@
     },
     {
       "name": "paged-attention Oxide feature check",
-      "command": "PATH=/usr/local/cuda/bin:$PATH CARGO_HOME=/workspace/.cargo-online CUDAFORGE_THREADS=2 CARGO_BUILD_JOBS=2 cargo +nightly-2026-04-03 check -p mistralrs-paged-attn --features oxide-infer",
+      "command": "PATH=/usr/local/cuda/bin:$PATH CARGO_HOME=<cargo-home> CUDAFORGE_THREADS=2 CARGO_BUILD_JOBS=2 cargo +nightly-2026-04-03 check -p mistralrs-paged-attn --features oxide-infer",
       "exit_code": 0
     },
     {
       "name": "model example Oxide feature check",
-      "command": "PATH=/usr/local/cuda/bin:$PATH CARGO_HOME=/workspace/.cargo-online CUDAFORGE_THREADS=2 CARGO_BUILD_JOBS=2 cargo +nightly-2026-04-03 check -p mistralrs --bin oxide_paged_attn --features oxide-infer",
+      "command": "PATH=/usr/local/cuda/bin:$PATH CARGO_HOME=<cargo-home> CUDAFORGE_THREADS=2 CARGO_BUILD_JOBS=2 cargo +nightly-2026-04-03 check -p mistralrs --bin oxide_paged_attn --features oxide-infer",
       "exit_code": 0
     },
     {
       "name": "model example strict Clippy",
-      "command": "PATH=/usr/local/cuda/bin:$PATH CARGO_HOME=/workspace/.cargo-online CUDAFORGE_THREADS=2 CARGO_BUILD_JOBS=2 cargo +nightly-2026-04-03 clippy -p mistralrs --bin oxide_paged_attn --features oxide-infer -- -D warnings",
+      "command": "PATH=/usr/local/cuda/bin:$PATH CARGO_HOME=<cargo-home> CUDAFORGE_THREADS=2 CARGO_BUILD_JOBS=2 cargo +nightly-2026-04-03 clippy -p mistralrs --bin oxide_paged_attn --features oxide-infer -- -D warnings",
       "exit_code": 0
     },
     {
       "name": "paged plan tests through cuda-oxide linker",
-      "command": "PATH=/usr/local/cuda/bin:$PATH CARGO_HOME=/workspace/.cargo-online CUDA_OXIDE_BACKEND=/tmp/mistral-cargo-online/cuda-oxide/librustc_codegen_cuda.so CUDAFORGE_THREADS=2 CARGO_BUILD_JOBS=2 cargo +nightly-2026-04-03 oxide test --arch sm_90 -- -p mistralrs-core paged_attention::plan::tests --features oxide-infer --lib",
+      "command": "PATH=/usr/local/cuda/bin:$PATH CARGO_HOME=<cargo-home> CUDA_OXIDE_BACKEND=<cuda-oxide-backend>/librustc_codegen_cuda.so CUDAFORGE_THREADS=2 CARGO_BUILD_JOBS=2 cargo +nightly-2026-04-03 oxide test --arch sm_90 -- -p mistralrs-core paged_attention::plan::tests --features oxide-infer --lib",
       "exit_code": 0
     },
     {
       "name": "generic adapter GPU recovery gate",
-      "command": "PATH=/usr/local/cuda/bin:$PATH CARGO_HOME=/workspace/.cargo-online CUDA_OXIDE_BACKEND=/tmp/mistral-cargo-online/cuda-oxide/librustc_codegen_cuda.so CUDAFORGE_THREADS=2 CARGO_BUILD_JOBS=2 cargo +nightly-2026-04-03 oxide run --bin oxide_adapter_gate --features oxide-infer --arch sm_90",
+      "command": "PATH=/usr/local/cuda/bin:$PATH CARGO_HOME=<cargo-home> CUDA_OXIDE_BACKEND=<cuda-oxide-backend>/librustc_codegen_cuda.so CUDAFORGE_THREADS=2 CARGO_BUILD_JOBS=2 cargo +nightly-2026-04-03 oxide run --bin oxide_adapter_gate --features oxide-infer --arch sm_90",
       "exit_code": 0
     },
     {
       "name": "Qwen2.5-1.5B Oxide model run",
-      "command": "MISTRALRS_OXIDE_INFER=1 OXIDE_MODEL_PATH=/workspace/models/qwen2.5-1.5b-instruct target/release/oxide_paged_attn",
+      "command": "MISTRALRS_OXIDE_INFER=1 OXIDE_MODEL_PATH=<model-root>/qwen2.5-1.5b-instruct target/release/oxide_paged_attn",
       "exit_code": 0
     },
     {
       "name": "Qwen2.5-1.5B baseline model run",
-      "command": "OXIDE_BASELINE=1 OXIDE_MODEL_PATH=/workspace/models/qwen2.5-1.5b-instruct target/release/oxide_paged_attn",
+      "command": "OXIDE_BASELINE=1 OXIDE_MODEL_PATH=<model-root>/qwen2.5-1.5b-instruct target/release/oxide_paged_attn",
       "exit_code": 0
     },
     {
       "name": "Qwen2.5-7B Oxide model run",
-      "command": "MISTRALRS_OXIDE_INFER=1 OXIDE_MODEL_PATH=/workspace/models/qwen2.5-7b-instruct target/release/oxide_paged_attn",
+      "command": "MISTRALRS_OXIDE_INFER=1 OXIDE_MODEL_PATH=<model-root>/qwen2.5-7b-instruct target/release/oxide_paged_attn",
       "exit_code": 0
     },
     {
       "name": "Qwen2.5-7B baseline model run",
-      "command": "OXIDE_BASELINE=1 OXIDE_MODEL_PATH=/workspace/models/qwen2.5-7b-instruct target/release/oxide_paged_attn",
+      "command": "OXIDE_BASELINE=1 OXIDE_MODEL_PATH=<model-root>/qwen2.5-7b-instruct target/release/oxide_paged_attn",
       "exit_code": 0
     }
   ],
