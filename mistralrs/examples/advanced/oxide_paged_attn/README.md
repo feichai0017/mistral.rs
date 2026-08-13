@@ -145,6 +145,54 @@ so the matched baseline is standard Mistral.rs paged attention. See the full
 [7B record](./h20-binding-reuse-qwen2.5-7b-840b065-20260813.json) for raw
 samples, P95 values, counters, protocol metadata, and excluded claims.
 
+### Current concurrent serving evidence
+
+The 2026-08-13 serving matrix used commit `ac2979e2`, Oxide Infer `840b0658`,
+BF16, one stream, and one recorded NVIDIA H20. Each row pools 60 measured waves
+per provider across three fresh-process blocks. The request sample count is 60
+times the concurrency. Aggregate output throughput is the sum of completion
+tokens divided by wall time from coordinated wave release through the last
+completion.
+
+| Model | Concurrency | Aggregate output P50, Oxide / standard | Oxide / standard | TTFT P95, Oxide / standard | End-to-end P95, Oxide / standard |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Qwen2.5-1.5B-Instruct | 1 | 189.44 / 204.32 tok/s | 0.927x | 12.76 / 9.53 ms | 340.64 / 314.30 ms |
+| Qwen2.5-1.5B-Instruct | 4 | 514.23 / 544.85 tok/s | 0.944x | 28.23 / 17.14 ms | 513.37 / 470.95 ms |
+| Qwen2.5-1.5B-Instruct | 8 | 728.35 / 763.44 tok/s | 0.954x | 28.57 / 28.60 ms | 707.25 / 673.19 ms |
+| Qwen2.5-1.5B-Instruct | 16 | 2,090.68 / 3,043.22 tok/s | 0.687x | 45.43 / 47.04 ms | 494.73 / 409.89 ms |
+| Qwen2.5-7B-Instruct | 1 | 101.24 / 104.74 tok/s | 0.967x | 23.54 / 14.82 ms | 646.27 / 611.77 ms |
+| Qwen2.5-7B-Instruct | 4 | 219.55 / 225.35 tok/s | 0.974x | 41.18 / 38.68 ms | 1,169.82 / 1,137.13 ms |
+| Qwen2.5-7B-Instruct | 8 | 254.21 / 257.59 tok/s | 0.987x | 71.13 / 69.63 ms | 2,016.94 / 1,988.84 ms |
+| Qwen2.5-7B-Instruct | 16 | 1,490.61 / 1,595.24 tok/s | 0.934x | 131.23 / 128.61 ms | 694.86 / 643.30 ms |
+
+Oxide aggregate output throughput scaled from concurrency 1 to 16 by 11.0x for
+1.5B and 14.7x for 7B. It remained within 7.3% of standard through concurrency
+8 for 1.5B and within 6.6% at every measured concurrency for 7B. The 1.5B
+concurrency-16 result exposes a specific optimization gap: Oxide was 31.3%
+below standard despite continuing to scale in absolute throughput.
+
+Across both models and all four concurrency levels, all 846,720 measured Oxide
+layer-decode submissions completed with zero provider failure and zero
+adapter-issued device-to-device copy. Every request reached 64 completion tokens,
+and both providers returned the same deterministic text. Oxide recorded
+`Bf16PagedBatchDecode`, HND, and the 8-warp token-parallel algorithm. The raw
+records retain every request, wave, block median, provider counter, memory
+observation, and excluded claim. They are stored as gzip-compressed JSON and can
+be inspected with `gzip -cd FILE.json.gz | jq`:
+
+- 1.5B: [c1](./h20-serving-qwen2.5-1.5b-c1-ac2979e-20260813.json.gz),
+  [c4](./h20-serving-qwen2.5-1.5b-c4-ac2979e-20260813.json.gz),
+  [c8](./h20-serving-qwen2.5-1.5b-c8-ac2979e-20260813.json.gz), and
+  [c16](./h20-serving-qwen2.5-1.5b-c16-ac2979e-20260813.json.gz).
+- 7B: [c1](./h20-serving-qwen2.5-7b-c1-ac2979e-20260813.json.gz),
+  [c4](./h20-serving-qwen2.5-7b-c4-ac2979e-20260813.json.gz),
+  [c8](./h20-serving-qwen2.5-7b-c8-ac2979e-20260813.json.gz), and
+  [c16](./h20-serving-qwen2.5-7b-c16-ac2979e-20260813.json.gz).
+
+This is a fixed-concurrency wave comparison, not a saturation or production
+capacity claim. FlashInfer remains excluded for these model shapes because GQA
+group sizes 6 and 7 are outside the decode dispatch supported by this adapter.
+
 ## Historical H20 results
 
 The archived 2026-08-11 run predates the project rename. It used an NVIDIA H20,
