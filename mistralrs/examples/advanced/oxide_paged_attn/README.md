@@ -7,7 +7,7 @@ provider.
 ## Checkout
 
 The optional Cargo dependencies resolve Oxide Infer from the immutable Git
-commit `02faf27b116f05831dca7261fb605be13faa2df4`. A standalone Mistral.rs
+commit `840b0658abc616a7dbd88b468f550965928d7f68`. A standalone Mistral.rs
 checkout can therefore build the `oxide-infer` feature without a sibling
 Oxide Infer checkout.
 
@@ -59,7 +59,7 @@ cargo +nightly-2026-04-03 oxide run --bin oxide_adapter_gate \
 
 ## Current source requalification
 
-The 2026-08-12 run used the immutable Oxide Infer source above and exercised
+The 2026-08-12 run used Oxide Infer commit `02faf27b` and exercised
 two local BF16 model configurations on one GPU:
 
 - Qwen2.5-1.5B-Instruct, 12 query heads, 2 KV heads, GQA group size 6.
@@ -89,7 +89,7 @@ Build the benchmark once through cuda-oxide, then run its six-block suite:
 cargo +nightly-2026-04-03 oxide build --arch sm_90 -- \
   --bin oxide_paged_attn_bench --features oxide-infer --release
 
-target/release/oxide_paged_attn_bench suite \
+MISTRALRS_OXIDE_PROFILE=1 target/release/oxide_paged_attn_bench suite \
   --model-path /path/to/qwen2.5-1.5b-instruct \
   --model-name Qwen2.5-1.5B-Instruct \
   --output /path/to/result.json
@@ -111,30 +111,32 @@ Oxide command fails, or the adapter issues a device-to-device copy.
 
 ### Current steady-state evidence
 
-The 2026-08-13 run used commit `7b6f9575`, Oxide Infer `02faf27b`, BF16, one
-stream, and one recorded NVIDIA H20. Each row pools 60 measured requests per
+The 2026-08-13 binding-reuse run used commit `d7c86540`, Oxide Infer `840b0658`,
+BF16, one stream, and one recorded NVIDIA H20. Each row pools 60 measured requests per
 provider across three fresh-process blocks. Both model directories matched the
 file hashes in the current-source requalification record above. Lower TTFT and
 TPOT are better; higher decode throughput is better.
 
 | Model | TTFT P50, Oxide / standard | TPOT P50, Oxide / standard | Decode P50, Oxide / standard | Oxide / standard decode |
 | --- | ---: | ---: | ---: | ---: |
-| Qwen2.5-1.5B-Instruct | 12.52 / 9.46 ms | 6.430 / 4.819 ms | 155.51 / 207.49 tok/s | 0.749x |
-| Qwen2.5-7B-Instruct | 15.06 / 14.75 ms | 11.054 / 9.470 ms | 90.46 / 105.60 tok/s | 0.857x |
+| Qwen2.5-1.5B-Instruct | 12.46 / 9.51 ms | 5.083 / 4.826 ms | 196.74 / 207.16 tok/s | 0.950x |
+| Qwen2.5-7B-Instruct | 15.14 / 14.76 ms | 9.788 / 9.477 ms | 102.17 / 105.52 tok/s | 0.968x |
 
 All 211,680 measured Oxide layer-decode submissions completed with zero
 provider failure and zero adapter-issued device-to-device copy. Both providers
 had the same post-warmup device-memory delta for each model: 4,674 MiB for 1.5B
-and 22,146 MiB for 7B. The current result establishes a stable integration, not
-a performance advantage: Oxide remains 25.1% below standard decode throughput
-for 1.5B and 14.3% below for 7B in this request shape.
+and 22,146 MiB for 7B. Reusing settled binding storage raised Oxide decode
+throughput by 26.5% for 1.5B and 12.9% for 7B relative to the earlier run.
+Oxide remains 5.0% below standard decode throughput for 1.5B and 3.2% below for
+7B in this request shape. Optional adapter profiling measured average host
+enqueue costs of 20.60 and 21.17 microseconds per layer, respectively.
 
 FlashInfer is not a third row in this comparison. These models use GQA group
 sizes 6 and 7, which are outside the FlashInfer decode dispatch supported here,
 so the matched baseline is standard Mistral.rs paged attention. See the full
-[1.5B record](./h20-steady-state-qwen2.5-1.5b-02faf27-20260813.json) and
-[7B record](./h20-steady-state-qwen2.5-7b-02faf27-20260813.json) for raw samples,
-P95 values, counters, protocol metadata, and excluded claims.
+[1.5B record](./h20-binding-reuse-qwen2.5-1.5b-840b065-20260813.json) and
+[7B record](./h20-binding-reuse-qwen2.5-7b-840b065-20260813.json) for raw
+samples, P95 values, counters, protocol metadata, and excluded claims.
 
 ## Historical H20 results
 
