@@ -4064,6 +4064,8 @@ dependencies = [
  "objc2-metal",
  "oxide-infer",
  "oxide-infer-cuda",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 
