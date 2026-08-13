@@ -8,6 +8,7 @@ use oxide_infer::{
 };
 use oxide_infer_cuda::interop::{
     EngineAlgorithm, EngineCommandFailure, EngineMetadataValidation, EngineOperator,
+    EngineStreamHandoff,
 };
 use std::error::Error;
 
@@ -220,7 +221,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         &expected_output,
         "second concurrent drain",
     )?;
-    assert_stats_delta(runtime.stats()?, baseline, 7, 7, 1)?;
+    let actual = runtime.stats()?;
+    assert_stats_delta(actual, baseline, 7, 7, 1)?;
     if runtime.drain()? != 0 {
         return Err("concurrent drainers left a queued completion".into());
     }
@@ -229,12 +231,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         "gate=oxide_adapter status=pass sequence=valid,invalid,valid,valid,drain,valid,drain \
          submitted_delta=7 completed_delta=7 failed_delta=1 typed_page_error=true \
          fifo_failed_position=2 same_runtime_reuse=true layout=HND gqa_group=6 \
-         algorithm=PagedBatchDecodeTokenParallel8 adapter_zero_copy=true \
+         algorithm=PagedBatchDecodeTokenParallel8 handoff={:?} adapter_zero_copy=true \
          adapter_d2d_copies=0 concurrent_drains=0,2 valid_before_max_abs={before_max_abs:.9e} \
          valid_after_max_abs={after_max_abs:.9e} valid_tail_max_abs={tail_max_abs:.9e} \
          reuse_max_abs={reuse_max_abs:.9e} \
          concurrent_first_max_abs={concurrent_first_max_abs:.9e} \
-         concurrent_second_max_abs={concurrent_second_max_abs:.9e}"
+         concurrent_second_max_abs={concurrent_second_max_abs:.9e}",
+        actual
+            .last_stream_handoff()
+            .expect("gate recorded a handoff")
     );
     Ok(())
 }
@@ -303,11 +308,17 @@ fn assert_stats_delta(
         actual.completed().checked_sub(baseline.completed()),
         actual.failed().checked_sub(baseline.failed()),
     );
+    let expected_handoff = if std::env::var("MISTRALRS_OXIDE_DIRECT_STREAM").as_deref() == Ok("1") {
+        EngineStreamHandoff::ExternalStreamDirect
+    } else {
+        EngineStreamHandoff::ExternalEventBridge
+    };
     if observed != (Some(submitted), Some(completed), Some(failed))
         || actual.last_operator() != Some(EngineOperator::Bf16PagedBatchDecode)
         || actual.last_layout() != Some(PagedKvLayout::Hnd)
         || actual.last_algorithm() != Some(EngineAlgorithm::PagedBatchDecodeTokenParallel8)
         || actual.last_metadata_validation() != Some(EngineMetadataValidation::DeviceChecked)
+        || actual.last_stream_handoff() != Some(expected_handoff)
         || !actual.adapter_zero_copy()
         || actual.external_regions() != 9
         || actual.adapter_device_to_device_copies() != 0

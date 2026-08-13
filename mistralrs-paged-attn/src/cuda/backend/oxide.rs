@@ -13,8 +13,8 @@ use oxide_infer_cuda::attention::{
 use oxide_infer_cuda::interop::{
     EngineAlgorithm, EngineCommand, EngineCommandCompletion, EngineCommandCompletionError,
     EngineCommandFailure, EngineEnqueueCause, EngineExecutionTrace, EngineExternalBindings,
-    EngineInteropQueue, EngineMetadataValidation, EngineOperator, ExternalCudaStream,
-    StreamOrderedEngineAuthority,
+    EngineInteropQueue, EngineMetadataValidation, EngineOperator, EngineStreamHandoff,
+    ExternalCudaStream, StreamOrderedEngineAuthority,
 };
 use oxide_infer_cuda::memory::{ReadDeviceRegion, ReadWriteDeviceRegion};
 use std::any::Any;
@@ -30,9 +30,11 @@ const MAX_IN_FLIGHT: usize = 128;
 const BINDING_COUNT: usize = 9;
 const OXIDE_PROFILE_ENV: &str = "MISTRALRS_OXIDE_PROFILE";
 const OXIDE_DEVICE_PROFILE_ENV: &str = "MISTRALRS_OXIDE_DEVICE_PROFILE";
+const OXIDE_DIRECT_STREAM_ENV: &str = "MISTRALRS_OXIDE_DIRECT_STREAM";
 
 static OXIDE_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
 static OXIDE_DEVICE_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
+static OXIDE_DIRECT_STREAM_ENABLED: OnceLock<bool> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct RuntimeKey {
@@ -103,7 +105,12 @@ struct ProfiledCompletion {
 }
 
 impl OxideRuntime {
-    fn new(key: RuntimeKey, ordinal: usize, stream: Arc<CudaStream>) -> Result<Self> {
+    fn new(
+        key: RuntimeKey,
+        ordinal: usize,
+        stream: Arc<CudaStream>,
+        direct_stream: bool,
+    ) -> Result<Self> {
         if key.stream <= 2 {
             return Err(oxide_error(
                 "Oxide paged decode requires an ordinary CUDA stream",
@@ -128,7 +135,14 @@ impl OxideRuntime {
         .map_err(|error| oxide_external_error("failed to import the Candle stream", error))?;
         let provider = DecodeProvider::load(&context)
             .map_err(|error| oxide_external_error("failed to load Oxide decode kernels", error))?;
-        let mut queue = if oxide_device_profile_enabled() {
+        if direct_stream && oxide_device_profile_enabled() {
+            return Err(oxide_error(
+                "Oxide direct stream and device profiling cannot be enabled together",
+            ));
+        }
+        let mut queue = if direct_stream {
+            EngineInteropQueue::new_direct(external, COMMAND_CAPACITY, MAX_IN_FLIGHT)
+        } else if oxide_device_profile_enabled() {
             EngineInteropQueue::new_device_profiled(external, COMMAND_CAPACITY, MAX_IN_FLIGHT)
         } else {
             EngineInteropQueue::new(external, COMMAND_CAPACITY, MAX_IN_FLIGHT)
@@ -387,6 +401,7 @@ pub struct OxidePagedDecodeStats {
     last_layout: Option<PagedKvLayout>,
     last_algorithm: Option<EngineAlgorithm>,
     last_metadata_validation: Option<EngineMetadataValidation>,
+    last_stream_handoff: Option<EngineStreamHandoff>,
     adapter_zero_copy: bool,
     external_regions: usize,
     adapter_device_to_device_copies: usize,
@@ -444,6 +459,10 @@ impl OxidePagedDecodeStats {
 
     pub const fn last_metadata_validation(self) -> Option<EngineMetadataValidation> {
         self.last_metadata_validation
+    }
+
+    pub const fn last_stream_handoff(self) -> Option<EngineStreamHandoff> {
+        self.last_stream_handoff
     }
 
     pub const fn metadata_trusted_by_adapter(self) -> bool {
@@ -567,6 +586,7 @@ impl OxidePagedDecodeStats {
         self.last_layout = trace.paged_kv_layout();
         self.last_algorithm = Some(trace.algorithm());
         self.last_metadata_validation = trace.metadata_validation();
+        self.last_stream_handoff = Some(trace.stream_handoff());
         self.adapter_zero_copy = trace.is_adapter_zero_copy();
         self.external_regions = trace.memory().external_regions();
         self.adapter_device_to_device_copies = trace.adapter_device_to_device_copies();
@@ -714,6 +734,7 @@ impl OxidePagedDecodeRuntimeState {
         key: RuntimeKey,
         ordinal: usize,
         stream: Arc<CudaStream>,
+        direct_stream: bool,
     ) -> Result<&mut OxideRuntime> {
         if let Some(runtime) = self.runtime.as_ref() {
             if runtime.key != key {
@@ -723,7 +744,7 @@ impl OxidePagedDecodeRuntimeState {
             }
         }
         if self.runtime.is_none() {
-            self.runtime = Some(OxideRuntime::new(key, ordinal, stream)?);
+            self.runtime = Some(OxideRuntime::new(key, ordinal, stream, direct_stream)?);
         }
         self.runtime
             .as_mut()
@@ -733,6 +754,7 @@ impl OxidePagedDecodeRuntimeState {
 
 /// A model-owned Oxide paged-decode runtime bound lazily to one CUDA stream.
 pub struct OxidePagedDecodeRuntime {
+    direct_stream: bool,
     lifecycle: Mutex<()>,
     state: Mutex<OxidePagedDecodeRuntimeState>,
 }
@@ -746,7 +768,17 @@ impl Default for OxidePagedDecodeRuntime {
 impl OxidePagedDecodeRuntime {
     /// Creates an unbound runtime. The first enqueue binds its CUDA context and stream.
     pub fn new() -> Self {
+        Self::new_with_direct_stream(oxide_direct_stream_enabled())
+    }
+
+    /// Creates an unbound runtime that submits directly on the engine stream.
+    pub fn new_direct() -> Self {
+        Self::new_with_direct_stream(true)
+    }
+
+    fn new_with_direct_stream(direct_stream: bool) -> Self {
         Self {
+            direct_stream,
             lifecycle: Mutex::new(()),
             state: Mutex::new(OxidePagedDecodeRuntimeState::default()),
         }
@@ -1135,7 +1167,7 @@ impl OxidePagedDecodeRuntime {
         };
         let plan = self
             .lock_state()?
-            .ensure_runtime(key, ordinal, Arc::clone(&stream))?
+            .ensure_runtime(key, ordinal, Arc::clone(&stream), self.direct_stream)?
             .plan(plan_key, spec)?;
         let preparation_host_nanoseconds = profile_elapsed_nanoseconds(preparation_started);
         let allocation_started = oxide_profile_enabled().then(Instant::now);
@@ -1379,6 +1411,11 @@ fn oxide_profile_enabled() -> bool {
 fn oxide_device_profile_enabled() -> bool {
     *OXIDE_DEVICE_PROFILE_ENABLED
         .get_or_init(|| std::env::var(OXIDE_DEVICE_PROFILE_ENV).as_deref() == Ok("1"))
+}
+
+fn oxide_direct_stream_enabled() -> bool {
+    *OXIDE_DIRECT_STREAM_ENABLED
+        .get_or_init(|| std::env::var(OXIDE_DIRECT_STREAM_ENV).as_deref() == Ok("1"))
 }
 
 fn duration_nanoseconds(duration: Duration) -> u64 {
