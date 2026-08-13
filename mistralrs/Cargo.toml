@@ -198,6 +198,11 @@ path = "examples/advanced/oxide_paged_attn/main.rs"
 required-features = ["oxide-infer"]
 
 [[bin]]
+name = "oxide_paged_attn_bench"
+path = "examples/advanced/oxide_paged_attn/bench.rs"
+required-features = ["oxide-infer"]
+
+[[bin]]
 name = "oxide_gemm_census"
 path = "examples/advanced/oxide_gemm_census/main.rs"
 required-features = ["gemm-census"]

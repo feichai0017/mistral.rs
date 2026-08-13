@@ -81,6 +81,34 @@ outcomes, and excluded claims. The recorded request timings are observations,
 not a performance comparison: the runs did not use a repeated, counterbalanced
 benchmark protocol and CUDA driver JIT caching differed between runs.
 
+## Steady-state benchmark
+
+Build the benchmark once through cuda-oxide, then run its six-block suite:
+
+```bash
+cargo +nightly-2026-04-03 oxide build --arch sm_90 -- \
+  --bin oxide_paged_attn_bench --features oxide-infer --release
+
+target/release/oxide_paged_attn_bench suite \
+  --model-path /path/to/qwen2.5-1.5b-instruct \
+  --model-name Qwen2.5-1.5B-Instruct \
+  --output /path/to/result.json
+```
+
+The suite uses an Oxide, baseline, baseline, Oxide, Oxide, baseline schedule.
+Each block runs in a fresh process, loads one model, disables prefix caching and
+CUDA Graphs, performs five unmeasured warmups, and then measures 20 streaming
+requests. The reported TTFT starts before request submission and ends at the
+first non-empty generated content. TPOT covers the remaining completion tokens.
+The suite also records end-to-end latency, decode throughput, CUDA driver
+device-used memory deltas from the post-context baseline, per-block medians,
+provider counters, and pooled nearest-rank P50/P95 values. The memory delta is a
+device-wide steady-state observation, not a process-private or allocator peak.
+
+The fixed prompt is expected to reach the 64-token cap. The suite fails closed
+if a request ends early, output changes within or across provider blocks, an
+Oxide command fails, or the adapter issues a device-to-device copy.
+
 ## Historical H20 results
 
 The archived 2026-08-11 run predates the project rename. It used an NVIDIA H20,
