@@ -138,6 +138,8 @@ struct OxideStatsDelta {
     last_operator: String,
     last_layout: String,
     last_algorithm: String,
+    last_metadata_validation: String,
+    metadata_trusted_by_adapter: bool,
     adapter_zero_copy: bool,
     external_regions: usize,
     adapter_device_to_device_copies: usize,
@@ -896,14 +898,17 @@ async fn oxide_stats_delta(
     if submitted == 0
         || completed != submitted
         || failed != 0
+        || !stats.metadata_trusted_by_adapter()
         || !stats.adapter_zero_copy()
         || stats.adapter_device_to_device_copies() != 0
         || (profile_enabled && drain_calls == 0)
     {
         bail!(
             "Oxide provider validation failed: submitted={submitted}, completed={completed}, \
-             failed={failed}, zero_copy={}, d2d_copies={}, profile_enabled={profile_enabled}, \
+             failed={failed}, trusted_metadata={}, zero_copy={}, d2d_copies={}, \
+             profile_enabled={profile_enabled}, \
              drain_calls={drain_calls}",
+            stats.metadata_trusted_by_adapter(),
             stats.adapter_zero_copy(),
             stats.adapter_device_to_device_copies()
         );
@@ -915,6 +920,8 @@ async fn oxide_stats_delta(
         last_operator: format!("{:?}", stats.last_operator()),
         last_layout: format!("{:?}", stats.last_layout()),
         last_algorithm: format!("{:?}", stats.last_algorithm()),
+        last_metadata_validation: format!("{:?}", stats.last_metadata_validation()),
+        metadata_trusted_by_adapter: stats.metadata_trusted_by_adapter(),
         adapter_zero_copy: stats.adapter_zero_copy(),
         external_regions: stats.external_regions(),
         adapter_device_to_device_copies: stats.adapter_device_to_device_copies(),

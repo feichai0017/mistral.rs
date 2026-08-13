@@ -8,11 +8,13 @@ use oxide_cuda_core::CudaContext;
 use oxide_infer::{Bf16PagedBatchDecodeSpec, PagedKvLayout};
 use oxide_infer_cuda::attention::{
     Bf16PagedBatchDecodeArgs, Bf16PagedBatchDecodePlan, DecodeProvider,
+    TrustedBf16PagedBatchDecodeArgs,
 };
 use oxide_infer_cuda::interop::{
     EngineAlgorithm, EngineCommand, EngineCommandCompletion, EngineCommandCompletionError,
     EngineCommandFailure, EngineEnqueueCause, EngineExecutionTrace, EngineExternalBindings,
-    EngineInteropQueue, EngineOperator, ExternalCudaStream, StreamOrderedEngineAuthority,
+    EngineInteropQueue, EngineMetadataValidation, EngineOperator, ExternalCudaStream,
+    StreamOrderedEngineAuthority,
 };
 use oxide_infer_cuda::memory::{ReadDeviceRegion, ReadWriteDeviceRegion};
 use std::any::Any;
@@ -42,6 +44,12 @@ struct PlanKey {
     max_num_pages: usize,
     num_query_heads: usize,
     num_kv_heads: usize,
+}
+
+#[derive(Clone, Copy)]
+enum AdapterMetadataValidation {
+    DeviceChecked,
+    TrustedByCaller,
 }
 
 struct CandleStreamLease {
@@ -151,6 +159,7 @@ impl OxideRuntime {
         plan: &Bf16PagedBatchDecodePlan,
         tensors: &DecodeTensors<'_>,
         pointers: DecodePointers,
+        metadata_validation: AdapterMetadataValidation,
     ) -> Result<ProfiledCompletion> {
         let binding_started = oxide_profile_enabled().then(Instant::now);
         let mut bindings = self
@@ -302,9 +311,22 @@ impl OxideRuntime {
                 .map_err(|error| oxide_external_error("failed to couple Candle bindings", error))?;
         let binding_host_nanoseconds = profile_elapsed_nanoseconds(binding_started);
         let interop_started = oxide_profile_enabled().then(Instant::now);
+        let command = match metadata_validation {
+            AdapterMetadataValidation::DeviceChecked => {
+                EngineCommand::Bf16PagedBatchDecode { plan, args }
+            }
+            AdapterMetadataValidation::TrustedByCaller => {
+                // SAFETY: this private variant is selected only by
+                // enqueue_trusted_paged_decode, whose caller owns the proof.
+                let args = unsafe {
+                    TrustedBf16PagedBatchDecodeArgs::assume_metadata_valid(tensors.spec, args)
+                };
+                EngineCommand::Bf16PagedBatchDecodeTrustedMetadata { plan, args }
+            }
+        };
         let submission = self
             .queue
-            .enqueue(EngineCommand::Bf16PagedBatchDecode { plan, args }, external)
+            .enqueue(command, external)
             .map_err(|error| {
                 if matches!(
                     error.cause(),
@@ -358,6 +380,7 @@ pub struct OxidePagedDecodeStats {
     last_operator: Option<EngineOperator>,
     last_layout: Option<PagedKvLayout>,
     last_algorithm: Option<EngineAlgorithm>,
+    last_metadata_validation: Option<EngineMetadataValidation>,
     adapter_zero_copy: bool,
     external_regions: usize,
     adapter_device_to_device_copies: usize,
@@ -405,6 +428,17 @@ impl OxidePagedDecodeStats {
 
     pub const fn last_algorithm(self) -> Option<EngineAlgorithm> {
         self.last_algorithm
+    }
+
+    pub const fn last_metadata_validation(self) -> Option<EngineMetadataValidation> {
+        self.last_metadata_validation
+    }
+
+    pub const fn metadata_trusted_by_adapter(self) -> bool {
+        matches!(
+            self.last_metadata_validation,
+            Some(EngineMetadataValidation::TrustedByAdapter)
+        )
     }
 
     pub const fn adapter_zero_copy(self) -> bool {
@@ -496,6 +530,7 @@ impl OxidePagedDecodeStats {
         self.last_operator = Some(trace.operator());
         self.last_layout = trace.paged_kv_layout();
         self.last_algorithm = Some(trace.algorithm());
+        self.last_metadata_validation = trace.metadata_validation();
         self.adapter_zero_copy = trace.is_adapter_zero_copy();
         self.external_regions = trace.memory().external_regions();
         self.adapter_device_to_device_copies = trace.adapter_device_to_device_copies();
@@ -729,6 +764,7 @@ struct DecodeLaunch<'a> {
     key: RuntimeKey,
     plan: Bf16PagedBatchDecodePlan,
     tensors: DecodeTensors<'a>,
+    metadata_validation: AdapterMetadataValidation,
     completion: RefCell<Option<ProfiledCompletion>>,
 }
 
@@ -897,7 +933,8 @@ fn enqueue_with_read_guards(
             .filter(|runtime| runtime.key == launch.key)
             .ok_or_else(|| oxide_error("Oxide decode runtime binding changed before enqueue"))?;
         let guard_host_nanoseconds = profile_elapsed_nanoseconds(guard_started);
-        let mut profiled_completion = runtime.enqueue(&launch.plan, tensors, pointers)?;
+        let mut profiled_completion =
+            runtime.enqueue(&launch.plan, tensors, pointers, launch.metadata_validation)?;
         profiled_completion.profile.guard_host_nanoseconds = guard_host_nanoseconds;
         profiled_completion
     };
@@ -933,6 +970,64 @@ impl OxidePagedDecodeRuntime {
         paged_kv_indices: &Tensor,
         logical_page_count: usize,
         paged_kv_last_page_len: &Tensor,
+    ) -> Result<Tensor> {
+        self.enqueue_paged_decode_impl(
+            query,
+            key_cache,
+            value_cache,
+            paged_kv_indptr,
+            paged_kv_indices,
+            logical_page_count,
+            paged_kv_last_page_len,
+            AdapterMetadataValidation::DeviceChecked,
+        )
+    }
+
+    /// Enqueues after the caller has established paged-metadata validity.
+    ///
+    /// This skips Oxide's device metadata validator and status readback.
+    ///
+    /// # Safety
+    ///
+    /// In addition to the stream and aliasing requirements of
+    /// [`Self::enqueue_paged_decode`], the caller must guarantee that the CSR
+    /// metadata satisfies the Oxide paged-decode contract and cannot be
+    /// mutated through command completion. In particular, page indices must
+    /// refer to physical pages in `key_cache` and `value_cache`.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn enqueue_trusted_paged_decode(
+        &self,
+        query: &Tensor,
+        key_cache: &Tensor,
+        value_cache: &Tensor,
+        paged_kv_indptr: &Tensor,
+        paged_kv_indices: &Tensor,
+        logical_page_count: usize,
+        paged_kv_last_page_len: &Tensor,
+    ) -> Result<Tensor> {
+        self.enqueue_paged_decode_impl(
+            query,
+            key_cache,
+            value_cache,
+            paged_kv_indptr,
+            paged_kv_indices,
+            logical_page_count,
+            paged_kv_last_page_len,
+            AdapterMetadataValidation::TrustedByCaller,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn enqueue_paged_decode_impl(
+        &self,
+        query: &Tensor,
+        key_cache: &Tensor,
+        value_cache: &Tensor,
+        paged_kv_indptr: &Tensor,
+        paged_kv_indices: &Tensor,
+        logical_page_count: usize,
+        paged_kv_last_page_len: &Tensor,
+        metadata_validation: AdapterMetadataValidation,
     ) -> Result<Tensor> {
         let profile_started = oxide_profile_enabled().then(Instant::now);
         let preparation_started = oxide_profile_enabled().then(Instant::now);
@@ -1026,6 +1121,7 @@ impl OxidePagedDecodeRuntime {
                 logical_page_count,
                 spec,
             },
+            metadata_validation,
             completion: RefCell::new(None),
         };
         output.inplace_op1(&OutputInplace { launch: &launch })?;
