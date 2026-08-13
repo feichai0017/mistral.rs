@@ -69,6 +69,29 @@ struct OxideRuntime {
     plans: HashMap<PlanKey, Bf16PagedBatchDecodePlan>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct EnqueueProfile {
+    preparation_host_nanoseconds: u64,
+    allocation_host_nanoseconds: u64,
+    guard_host_nanoseconds: u64,
+    binding_host_nanoseconds: u64,
+    interop_host_nanoseconds: u64,
+    engine_total_host_nanoseconds: u64,
+    engine_setup_host_nanoseconds: u64,
+    engine_pre_handoff_host_nanoseconds: u64,
+    engine_provider_host_nanoseconds: u64,
+    engine_provider_preflight_host_nanoseconds: u64,
+    engine_provider_metadata_host_nanoseconds: u64,
+    engine_provider_attention_host_nanoseconds: u64,
+    engine_status_readback_host_nanoseconds: u64,
+    engine_post_handoff_host_nanoseconds: u64,
+}
+
+struct ProfiledCompletion {
+    completion: EngineCommandCompletion,
+    profile: EnqueueProfile,
+}
+
 impl OxideRuntime {
     fn new(key: RuntimeKey, ordinal: usize, stream: Arc<CudaStream>) -> Result<Self> {
         if key.stream <= 2 {
@@ -95,8 +118,9 @@ impl OxideRuntime {
         .map_err(|error| oxide_external_error("failed to import the Candle stream", error))?;
         let provider = DecodeProvider::load(&context)
             .map_err(|error| oxide_external_error("failed to load Oxide decode kernels", error))?;
-        let queue = EngineInteropQueue::new(external, COMMAND_CAPACITY, MAX_IN_FLIGHT)
+        let mut queue = EngineInteropQueue::new(external, COMMAND_CAPACITY, MAX_IN_FLIGHT)
             .map_err(|error| oxide_external_error("failed to create the Oxide queue", error))?;
+        queue.set_host_profiling_enabled(oxide_profile_enabled());
         Ok(Self {
             key,
             stream,
@@ -127,7 +151,8 @@ impl OxideRuntime {
         plan: &Bf16PagedBatchDecodePlan,
         tensors: &DecodeTensors<'_>,
         pointers: DecodePointers,
-    ) -> Result<EngineCommandCompletion> {
+    ) -> Result<ProfiledCompletion> {
+        let binding_started = oxide_profile_enabled().then(Instant::now);
         let mut bindings = self
             .queue
             .bindings(BINDING_COUNT)
@@ -275,6 +300,8 @@ impl OxideRuntime {
         let external =
             unsafe { EngineExternalBindings::assume_engine_authority(bindings, authority) }
                 .map_err(|error| oxide_external_error("failed to couple Candle bindings", error))?;
+        let binding_host_nanoseconds = profile_elapsed_nanoseconds(binding_started);
+        let interop_started = oxide_profile_enabled().then(Instant::now);
         let submission = self
             .queue
             .enqueue(EngineCommand::Bf16PagedBatchDecode { plan, args }, external)
@@ -292,7 +319,29 @@ impl OxideRuntime {
             })?;
         let (completion, authority) = submission.into_parts();
         drop(authority);
-        Ok(completion)
+        let engine_profile = completion.trace().host_profile().unwrap_or_default();
+        Ok(ProfiledCompletion {
+            completion,
+            profile: EnqueueProfile {
+                binding_host_nanoseconds,
+                interop_host_nanoseconds: profile_elapsed_nanoseconds(interop_started),
+                engine_total_host_nanoseconds: engine_profile.total_host_nanoseconds(),
+                engine_setup_host_nanoseconds: engine_profile.setup_host_nanoseconds(),
+                engine_pre_handoff_host_nanoseconds: engine_profile.pre_handoff_host_nanoseconds(),
+                engine_provider_host_nanoseconds: engine_profile.provider_host_nanoseconds(),
+                engine_provider_preflight_host_nanoseconds: engine_profile
+                    .provider_preflight_host_nanoseconds(),
+                engine_provider_metadata_host_nanoseconds: engine_profile
+                    .provider_metadata_host_nanoseconds(),
+                engine_provider_attention_host_nanoseconds: engine_profile
+                    .provider_attention_host_nanoseconds(),
+                engine_status_readback_host_nanoseconds: engine_profile
+                    .status_readback_host_nanoseconds(),
+                engine_post_handoff_host_nanoseconds: engine_profile
+                    .post_handoff_host_nanoseconds(),
+                ..EnqueueProfile::default()
+            },
+        })
     }
 }
 
@@ -314,6 +363,20 @@ pub struct OxidePagedDecodeStats {
     adapter_device_to_device_copies: usize,
     profile_enabled: bool,
     enqueue_host_nanoseconds: u64,
+    preparation_host_nanoseconds: u64,
+    allocation_host_nanoseconds: u64,
+    guard_host_nanoseconds: u64,
+    binding_host_nanoseconds: u64,
+    interop_host_nanoseconds: u64,
+    engine_total_host_nanoseconds: u64,
+    engine_setup_host_nanoseconds: u64,
+    engine_pre_handoff_host_nanoseconds: u64,
+    engine_provider_host_nanoseconds: u64,
+    engine_provider_preflight_host_nanoseconds: u64,
+    engine_provider_metadata_host_nanoseconds: u64,
+    engine_provider_attention_host_nanoseconds: u64,
+    engine_status_readback_host_nanoseconds: u64,
+    engine_post_handoff_host_nanoseconds: u64,
     drain_host_nanoseconds: u64,
     drain_calls: u64,
 }
@@ -364,6 +427,62 @@ impl OxidePagedDecodeStats {
         self.enqueue_host_nanoseconds
     }
 
+    pub const fn preparation_host_nanoseconds(self) -> u64 {
+        self.preparation_host_nanoseconds
+    }
+
+    pub const fn allocation_host_nanoseconds(self) -> u64 {
+        self.allocation_host_nanoseconds
+    }
+
+    pub const fn guard_host_nanoseconds(self) -> u64 {
+        self.guard_host_nanoseconds
+    }
+
+    pub const fn binding_host_nanoseconds(self) -> u64 {
+        self.binding_host_nanoseconds
+    }
+
+    pub const fn interop_host_nanoseconds(self) -> u64 {
+        self.interop_host_nanoseconds
+    }
+
+    pub const fn engine_total_host_nanoseconds(self) -> u64 {
+        self.engine_total_host_nanoseconds
+    }
+
+    pub const fn engine_setup_host_nanoseconds(self) -> u64 {
+        self.engine_setup_host_nanoseconds
+    }
+
+    pub const fn engine_pre_handoff_host_nanoseconds(self) -> u64 {
+        self.engine_pre_handoff_host_nanoseconds
+    }
+
+    pub const fn engine_provider_host_nanoseconds(self) -> u64 {
+        self.engine_provider_host_nanoseconds
+    }
+
+    pub const fn engine_provider_preflight_host_nanoseconds(self) -> u64 {
+        self.engine_provider_preflight_host_nanoseconds
+    }
+
+    pub const fn engine_provider_metadata_host_nanoseconds(self) -> u64 {
+        self.engine_provider_metadata_host_nanoseconds
+    }
+
+    pub const fn engine_provider_attention_host_nanoseconds(self) -> u64 {
+        self.engine_provider_attention_host_nanoseconds
+    }
+
+    pub const fn engine_status_readback_host_nanoseconds(self) -> u64 {
+        self.engine_status_readback_host_nanoseconds
+    }
+
+    pub const fn engine_post_handoff_host_nanoseconds(self) -> u64 {
+        self.engine_post_handoff_host_nanoseconds
+    }
+
     pub const fn drain_host_nanoseconds(self) -> u64 {
         self.drain_host_nanoseconds
     }
@@ -389,11 +508,53 @@ impl OxidePagedDecodeStats {
         }
     }
 
-    fn record_enqueue_profile(&mut self, duration: Duration) {
+    fn record_enqueue_profile(&mut self, duration: Duration, profile: EnqueueProfile) {
         self.profile_enabled = true;
         self.enqueue_host_nanoseconds = self
             .enqueue_host_nanoseconds
             .saturating_add(duration_nanoseconds(duration));
+        self.preparation_host_nanoseconds = self
+            .preparation_host_nanoseconds
+            .saturating_add(profile.preparation_host_nanoseconds);
+        self.allocation_host_nanoseconds = self
+            .allocation_host_nanoseconds
+            .saturating_add(profile.allocation_host_nanoseconds);
+        self.guard_host_nanoseconds = self
+            .guard_host_nanoseconds
+            .saturating_add(profile.guard_host_nanoseconds);
+        self.binding_host_nanoseconds = self
+            .binding_host_nanoseconds
+            .saturating_add(profile.binding_host_nanoseconds);
+        self.interop_host_nanoseconds = self
+            .interop_host_nanoseconds
+            .saturating_add(profile.interop_host_nanoseconds);
+        self.engine_total_host_nanoseconds = self
+            .engine_total_host_nanoseconds
+            .saturating_add(profile.engine_total_host_nanoseconds);
+        self.engine_setup_host_nanoseconds = self
+            .engine_setup_host_nanoseconds
+            .saturating_add(profile.engine_setup_host_nanoseconds);
+        self.engine_pre_handoff_host_nanoseconds = self
+            .engine_pre_handoff_host_nanoseconds
+            .saturating_add(profile.engine_pre_handoff_host_nanoseconds);
+        self.engine_provider_host_nanoseconds = self
+            .engine_provider_host_nanoseconds
+            .saturating_add(profile.engine_provider_host_nanoseconds);
+        self.engine_provider_preflight_host_nanoseconds = self
+            .engine_provider_preflight_host_nanoseconds
+            .saturating_add(profile.engine_provider_preflight_host_nanoseconds);
+        self.engine_provider_metadata_host_nanoseconds = self
+            .engine_provider_metadata_host_nanoseconds
+            .saturating_add(profile.engine_provider_metadata_host_nanoseconds);
+        self.engine_provider_attention_host_nanoseconds = self
+            .engine_provider_attention_host_nanoseconds
+            .saturating_add(profile.engine_provider_attention_host_nanoseconds);
+        self.engine_status_readback_host_nanoseconds = self
+            .engine_status_readback_host_nanoseconds
+            .saturating_add(profile.engine_status_readback_host_nanoseconds);
+        self.engine_post_handoff_host_nanoseconds = self
+            .engine_post_handoff_host_nanoseconds
+            .saturating_add(profile.engine_post_handoff_host_nanoseconds);
     }
 
     fn record_drain_profile(&mut self, duration: Duration) {
@@ -568,7 +729,7 @@ struct DecodeLaunch<'a> {
     key: RuntimeKey,
     plan: Bf16PagedBatchDecodePlan,
     tensors: DecodeTensors<'a>,
-    completion: RefCell<Option<EngineCommandCompletion>>,
+    completion: RefCell<Option<ProfiledCompletion>>,
 }
 
 struct OutputInplace<'a> {
@@ -675,7 +836,8 @@ fn enqueue_with_read_guards(
     launch: &DecodeLaunch<'_>,
     mut pointers: DecodePointers,
     stream: &CudaStream,
-) -> Result<EngineCommandCompletion> {
+) -> Result<ProfiledCompletion> {
+    let guard_started = oxide_profile_enabled().then(Instant::now);
     let tensors = &launch.tensors;
     let (query_storage, query_layout) = tensors.query.storage_and_layout();
     let (key_storage, key_layout) = tensors.key_cache.storage_and_layout();
@@ -727,14 +889,17 @@ fn enqueue_with_read_guards(
     pointers.page_indices = page_indices;
     pointers.last_page_len = last_page_len;
 
-    let completion = {
+    let profiled_completion = {
         let mut state = launch.runtime.lock_state()?;
         let runtime = state
             .runtime
             .as_mut()
             .filter(|runtime| runtime.key == launch.key)
             .ok_or_else(|| oxide_error("Oxide decode runtime binding changed before enqueue"))?;
-        runtime.enqueue(&launch.plan, tensors, pointers)?
+        let guard_host_nanoseconds = profile_elapsed_nanoseconds(guard_started);
+        let mut profiled_completion = runtime.enqueue(&launch.plan, tensors, pointers)?;
+        profiled_completion.profile.guard_host_nanoseconds = guard_host_nanoseconds;
+        profiled_completion
     };
     drop(last_guard);
     drop(indices_guard);
@@ -742,7 +907,7 @@ fn enqueue_with_read_guards(
     drop(value_guard);
     drop(key_guard);
     drop(query_guard);
-    Ok(completion)
+    Ok(profiled_completion)
 }
 
 impl OxidePagedDecodeRuntime {
@@ -770,6 +935,7 @@ impl OxidePagedDecodeRuntime {
         paged_kv_last_page_len: &Tensor,
     ) -> Result<Tensor> {
         let profile_started = oxide_profile_enabled().then(Instant::now);
+        let preparation_started = oxide_profile_enabled().then(Instant::now);
         validate_inputs(
             query,
             key_cache,
@@ -824,6 +990,8 @@ impl OxidePagedDecodeRuntime {
             .lock_state()?
             .ensure_runtime(key, ordinal, Arc::clone(&stream))?
             .plan(plan_key, spec)?;
+        let preparation_host_nanoseconds = profile_elapsed_nanoseconds(preparation_started);
+        let allocation_started = oxide_profile_enabled().then(Instant::now);
         let output = unsafe {
             Tensor::empty(
                 (batch_size, num_query_heads, HEAD_DIM),
@@ -840,6 +1008,7 @@ impl OxidePagedDecodeRuntime {
                 query.device(),
             )?
         };
+        let allocation_host_nanoseconds = profile_elapsed_nanoseconds(allocation_started);
         let launch = DecodeLaunch {
             runtime: self,
             key,
@@ -860,15 +1029,23 @@ impl OxidePagedDecodeRuntime {
             completion: RefCell::new(None),
         };
         output.inplace_op1(&OutputInplace { launch: &launch })?;
-        let completion = launch
+        let mut profiled_completion = launch
             .completion
             .into_inner()
             .ok_or_else(|| oxide_error("Oxide decode returned without a completion"))?;
+        profiled_completion.profile.preparation_host_nanoseconds = preparation_host_nanoseconds;
+        profiled_completion.profile.allocation_host_nanoseconds = allocation_host_nanoseconds;
         let mut state = self.lock_state()?;
-        state.stats.record_submission(completion.trace());
-        state.pending.push_back(PendingDecode { completion });
+        state
+            .stats
+            .record_submission(profiled_completion.completion.trace());
+        state.pending.push_back(PendingDecode {
+            completion: profiled_completion.completion,
+        });
         if let Some(started) = profile_started {
-            state.stats.record_enqueue_profile(started.elapsed());
+            state
+                .stats
+                .record_enqueue_profile(started.elapsed(), profiled_completion.profile);
         }
         Ok(output)
     }
@@ -1053,6 +1230,13 @@ fn oxide_profile_enabled() -> bool {
 
 fn duration_nanoseconds(duration: Duration) -> u64 {
     u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
+
+fn profile_elapsed_nanoseconds(started: Option<Instant>) -> u64 {
+    started
+        .map(|started| started.elapsed())
+        .map(duration_nanoseconds)
+        .unwrap_or_default()
 }
 
 fn oxide_error(message: impl Into<String>) -> Error {

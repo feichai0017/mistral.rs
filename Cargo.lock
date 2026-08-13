@@ -4703,7 +4703,7 @@ dependencies = [
 [[package]]
 name = "oxide-infer"
 version = "1.0.0-alpha.1"
-source = "git+https://github.com/feichai0017/oxide-infer.git?rev=840b0658abc616a7dbd88b468f550965928d7f68#840b0658abc616a7dbd88b468f550965928d7f68"
+source = "git+https://github.com/feichai0017/oxide-infer.git?rev=c113d2c0e19ece33b806b3975ab113ffe48df8ee#c113d2c0e19ece33b806b3975ab113ffe48df8ee"
 dependencies = [
  "half",
 ]
@@ -4711,7 +4711,7 @@ dependencies = [
 [[package]]
 name = "oxide-infer-cuda"
 version = "1.0.0-alpha.1"
-source = "git+https://github.com/feichai0017/oxide-infer.git?rev=840b0658abc616a7dbd88b468f550965928d7f68#840b0658abc616a7dbd88b468f550965928d7f68"
+source = "git+https://github.com/feichai0017/oxide-infer.git?rev=c113d2c0e19ece33b806b3975ab113ffe48df8ee#c113d2c0e19ece33b806b3975ab113ffe48df8ee"
 dependencies = [
  "cuda-core 0.2.1",
  "cuda-device",
