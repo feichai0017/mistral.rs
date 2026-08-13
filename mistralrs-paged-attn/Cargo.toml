@@ -17,6 +17,11 @@ name = "oxide_adapter_gate"
 path = "src/bin/oxide_adapter_gate.rs"
 required-features = ["oxide-infer"]
 
+[[bin]]
+name = "oxide_adapter_bench"
+path = "src/bin/oxide_adapter_bench.rs"
+required-features = ["oxide-infer"]
+
 [dependencies]
 candle-core.workspace = true
 half.workspace = true
@@ -30,6 +35,8 @@ thiserror.workspace = true
 oxide-cuda-core = { workspace = true, optional = true }
 oxide-infer = { workspace = true, optional = true }
 oxide-infer-cuda = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 [build-dependencies]
 cudaforge = { workspace = true, optional = true }
@@ -43,6 +50,8 @@ oxide-infer = [
     "dep:oxide-cuda-core",
     "dep:oxide-infer",
     "dep:oxide-infer-cuda",
+    "dep:serde",
+    "dep:serde_json",
     "oxide-infer-cuda/cuda",
 ]
 metal = [
