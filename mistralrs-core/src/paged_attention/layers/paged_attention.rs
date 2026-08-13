@@ -1674,11 +1674,12 @@ impl PagedAttention {
 
             let runtime = runtime.require_oxide()?;
             // SAFETY: NormalPipeline serializes each step under exclusive
-            // pipeline/model-runner access. The admitted Oxide mode is one GPU
-            // on one ordinary stream, and its Tensor/cache aliases are not
-            // used concurrently before the completion drain.
+            // pipeline/model-runner access. make_paged_kv_tensors constructed
+            // this immutable device metadata from scheduler-owned CPU block
+            // tables and the same context lengths used above. The KV manager
+            // issued every physical page index for these cache tensors.
             unsafe {
-                runtime.enqueue_paged_decode(
+                runtime.enqueue_trusted_paged_decode(
                     query,
                     key_cache,
                     value_cache,

@@ -6,7 +6,9 @@ use mistralrs_paged_attn::{OxidePagedDecodeRuntime, OxidePagedDecodeStats};
 use oxide_infer::{
     paged_batch_decode_bf16_reference, Bf16PagedBatchDecodeSpec, ContractError, PagedKvLayout,
 };
-use oxide_infer_cuda::interop::{EngineAlgorithm, EngineCommandFailure, EngineOperator};
+use oxide_infer_cuda::interop::{
+    EngineAlgorithm, EngineCommandFailure, EngineMetadataValidation, EngineOperator,
+};
 use std::error::Error;
 
 const BATCH_SIZE: usize = 2;
@@ -305,6 +307,7 @@ fn assert_stats_delta(
         || actual.last_operator() != Some(EngineOperator::Bf16PagedBatchDecode)
         || actual.last_layout() != Some(PagedKvLayout::Hnd)
         || actual.last_algorithm() != Some(EngineAlgorithm::PagedBatchDecodeTokenParallel8)
+        || actual.last_metadata_validation() != Some(EngineMetadataValidation::DeviceChecked)
         || !actual.adapter_zero_copy()
         || actual.external_regions() != 9
         || actual.adapter_device_to_device_copies() != 0
