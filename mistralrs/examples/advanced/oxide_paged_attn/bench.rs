@@ -144,6 +144,40 @@ struct OxideStatsDelta {
     profile_enabled: bool,
     enqueue_host_nanoseconds: u64,
     enqueue_host_microseconds_per_operator: Option<f64>,
+    preparation_host_nanoseconds: u64,
+    preparation_host_microseconds_per_operator: Option<f64>,
+    allocation_host_nanoseconds: u64,
+    allocation_host_microseconds_per_operator: Option<f64>,
+    guard_host_nanoseconds: u64,
+    guard_host_microseconds_per_operator: Option<f64>,
+    binding_host_nanoseconds: u64,
+    binding_host_microseconds_per_operator: Option<f64>,
+    interop_host_nanoseconds: u64,
+    interop_host_microseconds_per_operator: Option<f64>,
+    engine_total_host_nanoseconds: u64,
+    engine_total_host_microseconds_per_operator: Option<f64>,
+    engine_setup_host_nanoseconds: u64,
+    engine_setup_host_microseconds_per_operator: Option<f64>,
+    engine_pre_handoff_host_nanoseconds: u64,
+    engine_pre_handoff_host_microseconds_per_operator: Option<f64>,
+    engine_provider_host_nanoseconds: u64,
+    engine_provider_host_microseconds_per_operator: Option<f64>,
+    engine_provider_preflight_host_nanoseconds: u64,
+    engine_provider_preflight_host_microseconds_per_operator: Option<f64>,
+    engine_provider_metadata_host_nanoseconds: u64,
+    engine_provider_metadata_host_microseconds_per_operator: Option<f64>,
+    engine_provider_attention_host_nanoseconds: u64,
+    engine_provider_attention_host_microseconds_per_operator: Option<f64>,
+    engine_provider_unattributed_host_nanoseconds: u64,
+    engine_provider_unattributed_host_microseconds_per_operator: Option<f64>,
+    engine_status_readback_host_nanoseconds: u64,
+    engine_status_readback_host_microseconds_per_operator: Option<f64>,
+    engine_post_handoff_host_nanoseconds: u64,
+    engine_post_handoff_host_microseconds_per_operator: Option<f64>,
+    engine_unattributed_host_nanoseconds: u64,
+    engine_unattributed_host_microseconds_per_operator: Option<f64>,
+    unattributed_host_nanoseconds: u64,
+    unattributed_host_microseconds_per_operator: Option<f64>,
     drain_host_nanoseconds: u64,
     drain_calls: u64,
     drain_host_microseconds_per_forward: Option<f64>,
@@ -262,6 +296,20 @@ struct StatsSnapshot {
     completed: u64,
     failed: u64,
     enqueue_host_nanoseconds: u64,
+    preparation_host_nanoseconds: u64,
+    allocation_host_nanoseconds: u64,
+    guard_host_nanoseconds: u64,
+    binding_host_nanoseconds: u64,
+    interop_host_nanoseconds: u64,
+    engine_total_host_nanoseconds: u64,
+    engine_setup_host_nanoseconds: u64,
+    engine_pre_handoff_host_nanoseconds: u64,
+    engine_provider_host_nanoseconds: u64,
+    engine_provider_preflight_host_nanoseconds: u64,
+    engine_provider_metadata_host_nanoseconds: u64,
+    engine_provider_attention_host_nanoseconds: u64,
+    engine_status_readback_host_nanoseconds: u64,
+    engine_post_handoff_host_nanoseconds: u64,
     drain_host_nanoseconds: u64,
     drain_calls: u64,
 }
@@ -697,6 +745,24 @@ async fn oxide_stats_snapshot(model: &Model, provider: Provider) -> Result<Optio
             completed: stats.completed(),
             failed: stats.failed(),
             enqueue_host_nanoseconds: stats.enqueue_host_nanoseconds(),
+            preparation_host_nanoseconds: stats.preparation_host_nanoseconds(),
+            allocation_host_nanoseconds: stats.allocation_host_nanoseconds(),
+            guard_host_nanoseconds: stats.guard_host_nanoseconds(),
+            binding_host_nanoseconds: stats.binding_host_nanoseconds(),
+            interop_host_nanoseconds: stats.interop_host_nanoseconds(),
+            engine_total_host_nanoseconds: stats.engine_total_host_nanoseconds(),
+            engine_setup_host_nanoseconds: stats.engine_setup_host_nanoseconds(),
+            engine_pre_handoff_host_nanoseconds: stats.engine_pre_handoff_host_nanoseconds(),
+            engine_provider_host_nanoseconds: stats.engine_provider_host_nanoseconds(),
+            engine_provider_preflight_host_nanoseconds: stats
+                .engine_provider_preflight_host_nanoseconds(),
+            engine_provider_metadata_host_nanoseconds: stats
+                .engine_provider_metadata_host_nanoseconds(),
+            engine_provider_attention_host_nanoseconds: stats
+                .engine_provider_attention_host_nanoseconds(),
+            engine_status_readback_host_nanoseconds: stats
+                .engine_status_readback_host_nanoseconds(),
+            engine_post_handoff_host_nanoseconds: stats.engine_post_handoff_host_nanoseconds(),
             drain_host_nanoseconds: stats.drain_host_nanoseconds(),
             drain_calls: stats.drain_calls(),
         })),
@@ -737,6 +803,87 @@ async fn oxide_stats_delta(
         .enqueue_host_nanoseconds
         .checked_sub(before.enqueue_host_nanoseconds)
         .context("Oxide enqueue profile counter regressed")?;
+    let preparation_host_nanoseconds = after
+        .preparation_host_nanoseconds
+        .checked_sub(before.preparation_host_nanoseconds)
+        .context("Oxide preparation profile counter regressed")?;
+    let allocation_host_nanoseconds = after
+        .allocation_host_nanoseconds
+        .checked_sub(before.allocation_host_nanoseconds)
+        .context("Oxide allocation profile counter regressed")?;
+    let guard_host_nanoseconds = after
+        .guard_host_nanoseconds
+        .checked_sub(before.guard_host_nanoseconds)
+        .context("Oxide guard profile counter regressed")?;
+    let binding_host_nanoseconds = after
+        .binding_host_nanoseconds
+        .checked_sub(before.binding_host_nanoseconds)
+        .context("Oxide binding profile counter regressed")?;
+    let interop_host_nanoseconds = after
+        .interop_host_nanoseconds
+        .checked_sub(before.interop_host_nanoseconds)
+        .context("Oxide interop profile counter regressed")?;
+    let engine_total_host_nanoseconds = after
+        .engine_total_host_nanoseconds
+        .checked_sub(before.engine_total_host_nanoseconds)
+        .context("Oxide engine total profile counter regressed")?;
+    let engine_setup_host_nanoseconds = after
+        .engine_setup_host_nanoseconds
+        .checked_sub(before.engine_setup_host_nanoseconds)
+        .context("Oxide engine setup profile counter regressed")?;
+    let engine_pre_handoff_host_nanoseconds = after
+        .engine_pre_handoff_host_nanoseconds
+        .checked_sub(before.engine_pre_handoff_host_nanoseconds)
+        .context("Oxide engine pre-handoff profile counter regressed")?;
+    let engine_provider_host_nanoseconds = after
+        .engine_provider_host_nanoseconds
+        .checked_sub(before.engine_provider_host_nanoseconds)
+        .context("Oxide engine provider profile counter regressed")?;
+    let engine_provider_preflight_host_nanoseconds = after
+        .engine_provider_preflight_host_nanoseconds
+        .checked_sub(before.engine_provider_preflight_host_nanoseconds)
+        .context("Oxide engine provider preflight profile counter regressed")?;
+    let engine_provider_metadata_host_nanoseconds = after
+        .engine_provider_metadata_host_nanoseconds
+        .checked_sub(before.engine_provider_metadata_host_nanoseconds)
+        .context("Oxide engine provider metadata profile counter regressed")?;
+    let engine_provider_attention_host_nanoseconds = after
+        .engine_provider_attention_host_nanoseconds
+        .checked_sub(before.engine_provider_attention_host_nanoseconds)
+        .context("Oxide engine provider attention profile counter regressed")?;
+    let engine_provider_attributed_host_nanoseconds = engine_provider_preflight_host_nanoseconds
+        .checked_add(engine_provider_metadata_host_nanoseconds)
+        .and_then(|value| value.checked_add(engine_provider_attention_host_nanoseconds))
+        .context("Oxide engine provider profile breakdown overflowed")?;
+    let engine_provider_unattributed_host_nanoseconds = engine_provider_host_nanoseconds
+        .checked_sub(engine_provider_attributed_host_nanoseconds)
+        .context("Oxide engine provider profile stages exceed total time")?;
+    let engine_status_readback_host_nanoseconds = after
+        .engine_status_readback_host_nanoseconds
+        .checked_sub(before.engine_status_readback_host_nanoseconds)
+        .context("Oxide engine status-readback profile counter regressed")?;
+    let engine_post_handoff_host_nanoseconds = after
+        .engine_post_handoff_host_nanoseconds
+        .checked_sub(before.engine_post_handoff_host_nanoseconds)
+        .context("Oxide engine post-handoff profile counter regressed")?;
+    let engine_attributed_host_nanoseconds = engine_setup_host_nanoseconds
+        .checked_add(engine_pre_handoff_host_nanoseconds)
+        .and_then(|value| value.checked_add(engine_provider_host_nanoseconds))
+        .and_then(|value| value.checked_add(engine_status_readback_host_nanoseconds))
+        .and_then(|value| value.checked_add(engine_post_handoff_host_nanoseconds))
+        .context("Oxide engine profile breakdown overflowed")?;
+    let engine_unattributed_host_nanoseconds = engine_total_host_nanoseconds
+        .checked_sub(engine_attributed_host_nanoseconds)
+        .context("Oxide engine profile stages exceed total time")?;
+    let attributed_host_nanoseconds = preparation_host_nanoseconds
+        .checked_add(allocation_host_nanoseconds)
+        .and_then(|value| value.checked_add(guard_host_nanoseconds))
+        .and_then(|value| value.checked_add(binding_host_nanoseconds))
+        .and_then(|value| value.checked_add(interop_host_nanoseconds))
+        .context("Oxide enqueue profile breakdown overflowed")?;
+    let unattributed_host_nanoseconds = enqueue_host_nanoseconds
+        .checked_sub(attributed_host_nanoseconds)
+        .context("Oxide enqueue profile stages exceed total time")?;
     let drain_host_nanoseconds = after
         .drain_host_nanoseconds
         .checked_sub(before.drain_host_nanoseconds)
@@ -775,6 +922,61 @@ async fn oxide_stats_delta(
         enqueue_host_nanoseconds,
         enqueue_host_microseconds_per_operator: profile_enabled
             .then_some(enqueue_host_nanoseconds as f64 / submitted as f64 / 1_000.0),
+        preparation_host_nanoseconds,
+        preparation_host_microseconds_per_operator: profile_enabled
+            .then_some(preparation_host_nanoseconds as f64 / submitted as f64 / 1_000.0),
+        allocation_host_nanoseconds,
+        allocation_host_microseconds_per_operator: profile_enabled
+            .then_some(allocation_host_nanoseconds as f64 / submitted as f64 / 1_000.0),
+        guard_host_nanoseconds,
+        guard_host_microseconds_per_operator: profile_enabled
+            .then_some(guard_host_nanoseconds as f64 / submitted as f64 / 1_000.0),
+        binding_host_nanoseconds,
+        binding_host_microseconds_per_operator: profile_enabled
+            .then_some(binding_host_nanoseconds as f64 / submitted as f64 / 1_000.0),
+        interop_host_nanoseconds,
+        interop_host_microseconds_per_operator: profile_enabled
+            .then_some(interop_host_nanoseconds as f64 / submitted as f64 / 1_000.0),
+        engine_total_host_nanoseconds,
+        engine_total_host_microseconds_per_operator: profile_enabled
+            .then_some(engine_total_host_nanoseconds as f64 / submitted as f64 / 1_000.0),
+        engine_setup_host_nanoseconds,
+        engine_setup_host_microseconds_per_operator: profile_enabled
+            .then_some(engine_setup_host_nanoseconds as f64 / submitted as f64 / 1_000.0),
+        engine_pre_handoff_host_nanoseconds,
+        engine_pre_handoff_host_microseconds_per_operator: profile_enabled
+            .then_some(engine_pre_handoff_host_nanoseconds as f64 / submitted as f64 / 1_000.0),
+        engine_provider_host_nanoseconds,
+        engine_provider_host_microseconds_per_operator: profile_enabled
+            .then_some(engine_provider_host_nanoseconds as f64 / submitted as f64 / 1_000.0),
+        engine_provider_preflight_host_nanoseconds,
+        engine_provider_preflight_host_microseconds_per_operator: profile_enabled.then_some(
+            engine_provider_preflight_host_nanoseconds as f64 / submitted as f64 / 1_000.0,
+        ),
+        engine_provider_metadata_host_nanoseconds,
+        engine_provider_metadata_host_microseconds_per_operator: profile_enabled.then_some(
+            engine_provider_metadata_host_nanoseconds as f64 / submitted as f64 / 1_000.0,
+        ),
+        engine_provider_attention_host_nanoseconds,
+        engine_provider_attention_host_microseconds_per_operator: profile_enabled.then_some(
+            engine_provider_attention_host_nanoseconds as f64 / submitted as f64 / 1_000.0,
+        ),
+        engine_provider_unattributed_host_nanoseconds,
+        engine_provider_unattributed_host_microseconds_per_operator: profile_enabled.then_some(
+            engine_provider_unattributed_host_nanoseconds as f64 / submitted as f64 / 1_000.0,
+        ),
+        engine_status_readback_host_nanoseconds,
+        engine_status_readback_host_microseconds_per_operator: profile_enabled
+            .then_some(engine_status_readback_host_nanoseconds as f64 / submitted as f64 / 1_000.0),
+        engine_post_handoff_host_nanoseconds,
+        engine_post_handoff_host_microseconds_per_operator: profile_enabled
+            .then_some(engine_post_handoff_host_nanoseconds as f64 / submitted as f64 / 1_000.0),
+        engine_unattributed_host_nanoseconds,
+        engine_unattributed_host_microseconds_per_operator: profile_enabled
+            .then_some(engine_unattributed_host_nanoseconds as f64 / submitted as f64 / 1_000.0),
+        unattributed_host_nanoseconds,
+        unattributed_host_microseconds_per_operator: profile_enabled
+            .then_some(unattributed_host_nanoseconds as f64 / submitted as f64 / 1_000.0),
         drain_host_nanoseconds,
         drain_calls,
         drain_host_microseconds_per_forward: profile_enabled
