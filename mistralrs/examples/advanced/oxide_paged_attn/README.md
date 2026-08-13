@@ -227,9 +227,9 @@ for every request, wave, counter, timing accumulator, and excluded claim.
 
 ### Trusted metadata result
 
-Commit `8a52830c3` pins Oxide Infer `af4eae60` and lets the serialized
-model path issue a trusted-metadata capability for page tables constructed on
-the CPU from scheduler-owned block tables and context lengths. The public
+Commit `bda213bc7` pins Oxide Infer `d3f7e4e3` and lets the serialized model
+path issue a single-use trusted-metadata capability for page tables constructed
+on the CPU from scheduler-owned block tables and context lengths. The public
 checked adapter path remains the default. Its H20 recovery gate still rejected
 the invalid physical page with `PageIndexOutOfRange`, settled all seven queued
 commands, reused the runtime, and matched all six valid outputs exactly.
@@ -242,34 +242,39 @@ and zero adapter-issued device-to-device copy. Every Oxide block recorded
 
 | Pooled host stage | R7 checked | R8 trusted | Change |
 | --- | ---: | ---: | ---: |
-| Complete enqueue | 24.435 us | 18.332 us | -25.0% |
-| Engine interop | 13.864 us | 7.909 us | -42.9% |
+| Complete enqueue | 24.435 us | 18.245 us | -25.3% |
+| Engine interop | 13.864 us | 7.825 us | -43.6% |
 | Provider metadata launch | 4.240 us | 0.000 us | removed |
-| Status-readback timing bucket | 2.103 us | 0.057 us | -97.3% |
+| Status-readback timing bucket | 2.103 us | 0.050 us | -97.6% |
 
-The trusted command reserves no device-status readback. Its residual 0.057 us
+The trusted command reserves no device-status readback. Its residual 0.050 us
 is the measured host timer and no-op finalization bucket. The complete enqueue
-path saved 6.103 us per layer relative to the earlier checked run. See the
-[profile record](./h20-r8-trusted-profile-qwen2.5-1.5b-c16-8a52830-20260813.json.gz).
+path saved 6.190 us per layer relative to the earlier checked run. See the
+[profile record](./h20-r8-trusted-profile-qwen2.5-1.5b-c16-bda213b-20260813.json.gz).
 
-A second run disabled profiling and restored the full serving protocol of five
-warmup and 20 measured waves per block. It completed 105,840 measured Oxide
-layer-decode submissions and 960 requests per provider with no failure. The
-table compares it with the earlier checked concurrency-16 serving record on the
-same H20 and benchmark protocol.
+Two runs disabled profiling and restored the full serving protocol of five
+warmup and 20 measured waves per block. Together they completed 211,680
+measured Oxide layer-decode submissions and 1,920 requests per provider with no
+failure. Their Oxide/standard aggregate-output ratios were 0.725x and 0.691x,
+which exposes material run-to-run drift. The table pools the raw samples from
+both trusted runs with the same nearest-rank method and compares them with the
+earlier checked concurrency-16 serving record.
 
-| Metric | Checked `ac2979e2` | Trusted `8a52830c3` | Change |
+| Metric | Checked `ac2979e2` | Trusted `bda213bc7` | Change |
 | --- | ---: | ---: | ---: |
-| Oxide aggregate output P50 | 2,090.68 tok/s | 2,134.58 tok/s | +2.10% |
-| Oxide decode P50 | 141.87 tok/s | 145.29 tok/s | +2.41% |
-| Oxide / standard aggregate P50 | 0.687x | 0.700x | +1.87% relative |
-| Oxide / standard decode P50 | 0.657x | 0.671x | +2.06% relative |
+| Oxide aggregate output P50 | 2,090.68 tok/s | 2,069.24 tok/s | -1.03% |
+| Oxide decode P50 | 141.87 tok/s | 140.49 tok/s | -0.98% |
+| Oxide / standard aggregate P50 | 0.687x | 0.696x | +1.33% relative |
+| Oxide / standard decode P50 | 0.657x | 0.667x | +1.55% relative |
 
-Trusted metadata improves the targeted path, but it does not close the
-concurrency-16 gap: aggregate output remains 30.0% below standard in the new
-run. The next investigation should measure device time for the actual batched
-engine shapes rather than further optimize metadata validation or stream
-handoff. See the [serving record](./h20-r8-trusted-serving-qwen2.5-1.5b-c16-8a52830-20260813.json.gz).
+The stable claim is the 25.3% reduction in measured host enqueue cost. These
+cross-run serving results do not establish an end-to-end speedup: absolute
+Oxide throughput is slightly lower, the normalized ratio is slightly higher,
+and aggregate output remains 30.4% below standard after pooling. The next
+investigation should use a same-binary checked/trusted comparison or measure
+CUDA-event device time for the actual batched engine shapes. See serving
+[replicate one](./h20-r8-trusted-serving-r1-qwen2.5-1.5b-c16-bda213b-20260813.json.gz)
+and [replicate two](./h20-r8-trusted-serving-r2-qwen2.5-1.5b-c16-bda213b-20260813.json.gz).
 
 ## Historical H20 results
 
