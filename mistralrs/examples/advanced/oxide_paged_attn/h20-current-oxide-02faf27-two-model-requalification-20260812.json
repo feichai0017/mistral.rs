@@ -1,0 +1,406 @@
+{
+  "schema": "mistralrs.oxide-current-source-two-model-requalification.v1",
+  "date": "2026-08-12",
+  "scope": "current-source single-GPU functional requalification of the Oxide paged-decode provider with two BF16 GQA models",
+  "source": {
+    "mistral_rs_fork_base_commit": "7964856bfde43a354dcbaf7628ec054c5c7f9e4c",
+    "mistral_rs_upstream_reference_commit": "8010b6a0578e416120b590ed72fd46ed5f24ee85",
+    "mistral_rs_implementation_commit": "5335f8588d5bfaf3f2600ed46a9cef0b2d58ebfa",
+    "oxide_infer_commit": "02faf27b116f05831dca7261fb605be13faa2df4",
+    "oxide_dependency_kind": "immutable Git revision",
+    "cuda_oxide_commit": "868f8ec4ef900bae7e67e7f9508b2da66eee5472",
+    "cargo_oxide_version": "0.2.1",
+    "validation_binary_sha256": "89a8e721c1a09cf6fe8c21f1670392c6e231720d3cd8d97d725135c569be5aff",
+    "sha256": {
+      "Cargo.toml": "f02fb641c78178a7332a9e0517b2d1fe1a926665a4703c27f85a5caa4d2e763f",
+      "Cargo.lock": "d39d8ce5f61a387ed2dc5f208d773289f4c74c88be4f6db480fb71725d320bb0",
+      "mistralrs-paged-attn/src/cuda/backend/oxide.rs": "f0eb871c0127d42dd77e38c54f648d9d648017be74521cb7f7af1b5f0967ce74",
+      "mistralrs-paged-attn/src/bin/oxide_adapter_gate.rs": "754aec6ddaa127c994727570efe667d5db69097f1909309fed084bea192603c7",
+      "mistralrs/examples/advanced/oxide_paged_attn/main.rs": "221e42359fa311f7c1006f6c0ba70155524840a734f21957d401e98a41284e64"
+    }
+  },
+  "hardware": {
+    "gpu": "NVIDIA H20",
+    "compute_capability": "9.0",
+    "memory_total_mib": 97871,
+    "driver": "535.161.08",
+    "cuda_toolkit": "13.1",
+    "nvcc_build": "cuda_13.1.r13.1/compiler.37061995_0",
+    "operating_system": "Debian GNU/Linux 12 (bookworm)",
+    "rustc": "1.96.0-nightly (55e86c996 2026-04-02)",
+    "cargo": "1.96.0-nightly (888f67534 2026-03-30)"
+  },
+  "execution_environment": {
+    "working_directory": "<mistral.rs-checkout>",
+    "cargo_home": "<cargo-home>",
+    "cuda_path_prefix": "/usr/local/cuda/bin",
+    "cudaforge_threads": 2,
+    "cargo_build_jobs": 2,
+    "device": 0,
+    "stream_count": 1,
+    "model_count_per_process": 1
+  },
+  "request": {
+    "prompt": "Reply with one short sentence that explains what a CUDA kernel does.",
+    "temperature": 0.0,
+    "max_output_tokens": 8,
+    "top_logprobs": 5,
+    "max_num_sequences": 1,
+    "context_size": 4096,
+    "page_size": 16
+  },
+  "models": [
+    {
+      "name": "Qwen2.5-1.5B-Instruct",
+      "path": "<model-root>/qwen2.5-1.5b-instruct",
+      "files_sha256": {
+        "config.json": "98d2ff8cc47488d08a2b0b3acf4eb99ef210779b42bd48605f6b8e36acdbf670",
+        "model.safetensors": "dd924a11b4c220f385b51ffa522daea7c9f3d850e31b162bb5661df483c6d3ee",
+        "tokenizer.json": "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539"
+      },
+      "configuration": {
+        "dtype": "BF16",
+        "layers": 28,
+        "query_heads": 12,
+        "kv_heads": 2,
+        "gqa_group_size": 6,
+        "head_dim": 128,
+        "kv_layout": "HND"
+      },
+      "oxide": {
+        "exit_code": 0,
+        "decoded_text": "A CUDA kernel is a lightweight, parallel",
+        "selected_token_strings": [
+          "A",
+          " CUDA",
+          " kernel",
+          " is",
+          " a",
+          " lightweight",
+          ",",
+          " parallel"
+        ],
+        "selected_token_logprobs": [
+          -0.005035361,
+          -0.00013280797,
+          -0.0002339756,
+          -0.07974281,
+          -0.015938262,
+          -1.8937272,
+          -0.78480595,
+          -0.8663772
+        ],
+        "usage_observation": {
+          "prompt_tokens": 42,
+          "completion_tokens": 8,
+          "total_tokens": 50,
+          "avg_tok_per_sec": 36.73769,
+          "avg_prompt_tok_per_sec": 1312.5,
+          "avg_completion_tok_per_sec": 6.019563,
+          "total_time_sec": 1.361,
+          "total_prompt_time_sec": 0.032,
+          "total_completion_time_sec": 1.329
+        },
+        "provider_stats": {
+          "submitted_operator_calls": 196,
+          "completed_operator_calls": 196,
+          "failed_operator_calls": 0,
+          "last_operator": "Bf16PagedBatchDecode",
+          "last_layout": "HND",
+          "last_algorithm": "PagedBatchDecodeTokenParallel8",
+          "adapter_zero_copy": true,
+          "last_external_region_count": 9,
+          "adapter_device_to_device_copies": 0
+        }
+      },
+      "baseline": {
+        "provider": "Mistral.rs standard paged attention",
+        "exit_code": 0,
+        "decoded_text": "A CUDA kernel is a lightweight, parallel",
+        "selected_token_strings": [
+          "A",
+          " CUDA",
+          " kernel",
+          " is",
+          " a",
+          " lightweight",
+          ",",
+          " parallel"
+        ],
+        "selected_token_logprobs": [
+          -0.005035361,
+          -0.00013185416,
+          -0.0002339756,
+          -0.07145772,
+          -0.01590235,
+          -1.8274722,
+          -0.8364907,
+          -0.8359658
+        ],
+        "usage_observation": {
+          "prompt_tokens": 42,
+          "completion_tokens": 8,
+          "total_tokens": 50,
+          "avg_tok_per_sec": 769.2308,
+          "avg_prompt_tok_per_sec": 1500.0,
+          "avg_completion_tok_per_sec": 216.21622,
+          "total_time_sec": 0.065,
+          "total_prompt_time_sec": 0.028,
+          "total_completion_time_sec": 0.037
+        }
+      },
+      "comparison": {
+        "decoded_text_equal": true,
+        "selected_token_strings_equal": true,
+        "selected_token_logprob_abs_diff": [
+          0.0,
+          0.00000095381,
+          0.0,
+          0.008285089999999995,
+          0.000035912000000002525,
+          0.06625499999999995,
+          0.05168475000000006,
+          0.030411399999999977
+        ],
+        "selected_token_logprob_max_abs_diff": 0.06625499999999995,
+        "selected_token_logprob_mean_abs_diff": 0.01958413822625
+      }
+    },
+    {
+      "name": "Qwen2.5-7B-Instruct",
+      "path": "<model-root>/qwen2.5-7b-instruct",
+      "files_sha256": {
+        "config.json": "7463bb0ea78315365e6c6b74de4e73bbcc8359dfb0c5a737584e077d42c0b03c",
+        "model-00001-of-00004.safetensors": "a1333e6293854747c481288ea83b348226af178dd565c49b6f9495ba1966aba7",
+        "model-00002-of-00004.safetensors": "f5d25a2772cb825164a2a2c0fb6d51a87e282abf21e4dd75bc5cfb3cd0ea6185",
+        "model-00003-of-00004.safetensors": "8efdec4c1bc12317ae1a38dc42b595ce777738a64deea3fcb8a0a91381bcdfd5",
+        "model-00004-of-00004.safetensors": "1a72d403cdf0c1ec3cb7f289f17b394a01e64394c2e9b3c0f94dbce3faf879bd",
+        "model.safetensors.index.json": "624bf7c47cd12468fdc16e38a47cf4f19e0415b859a223ba3c027eed2f0e1028",
+        "tokenizer.json": "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539"
+      },
+      "configuration": {
+        "dtype": "BF16",
+        "layers": 28,
+        "query_heads": 28,
+        "kv_heads": 4,
+        "gqa_group_size": 7,
+        "head_dim": 128,
+        "kv_layout": "HND"
+      },
+      "oxide": {
+        "exit_code": 0,
+        "decoded_text": "A CUDA kernel is a function that runs",
+        "selected_token_strings": [
+          "A",
+          " CUDA",
+          " kernel",
+          " is",
+          " a",
+          " function",
+          " that",
+          " runs"
+        ],
+        "selected_token_logprobs": [
+          -0.0000005960466,
+          -0.0000038147045,
+          -0.0000010728842,
+          -0.0022068515,
+          -0.0000021457695,
+          -0.0008440002,
+          -0.05131282,
+          -0.0525652
+        ],
+        "usage_observation": {
+          "prompt_tokens": 42,
+          "completion_tokens": 8,
+          "total_tokens": 50,
+          "avg_tok_per_sec": 219.29825,
+          "avg_prompt_tok_per_sec": 1272.7273,
+          "avg_completion_tok_per_sec": 41.025642,
+          "total_time_sec": 0.228,
+          "total_prompt_time_sec": 0.033,
+          "total_completion_time_sec": 0.195
+        },
+        "provider_stats": {
+          "submitted_operator_calls": 196,
+          "completed_operator_calls": 196,
+          "failed_operator_calls": 0,
+          "last_operator": "Bf16PagedBatchDecode",
+          "last_layout": "HND",
+          "last_algorithm": "PagedBatchDecodeTokenParallel8",
+          "adapter_zero_copy": true,
+          "last_external_region_count": 9,
+          "adapter_device_to_device_copies": 0
+        }
+      },
+      "baseline": {
+        "provider": "Mistral.rs standard paged attention",
+        "exit_code": 0,
+        "decoded_text": "A CUDA kernel is a function that runs",
+        "selected_token_strings": [
+          "A",
+          " CUDA",
+          " kernel",
+          " is",
+          " a",
+          " function",
+          " that",
+          " runs"
+        ],
+        "selected_token_logprobs": [
+          -0.0000005960466,
+          -0.000003576285,
+          -0.0000010728842,
+          -0.0022051788,
+          -0.0000019073505,
+          -0.0009192876,
+          -0.05113226,
+          -0.049638983
+        ],
+        "usage_observation": {
+          "prompt_tokens": 42,
+          "completion_tokens": 8,
+          "total_tokens": 50,
+          "avg_tok_per_sec": 480.76923,
+          "avg_prompt_tok_per_sec": 1312.5,
+          "avg_completion_tok_per_sec": 111.111115,
+          "total_time_sec": 0.104,
+          "total_prompt_time_sec": 0.032,
+          "total_completion_time_sec": 0.072
+        }
+      },
+      "comparison": {
+        "decoded_text_equal": true,
+        "selected_token_strings_equal": true,
+        "selected_token_logprob_abs_diff": [
+          0.0,
+          0.0000002384194999999997,
+          0.0,
+          0.0000016726999999996765,
+          0.000000238419,
+          0.00007528739999999997,
+          0.00018056000000000322,
+          0.002926217000000002
+        ],
+        "selected_token_logprob_max_abs_diff": 0.002926217000000002,
+        "selected_token_logprob_mean_abs_diff": 0.0003980267423125006
+      }
+    }
+  ],
+  "adapter_gate": {
+    "contract": {
+      "dtype": "BF16",
+      "batch_size": 2,
+      "max_num_pages": 4,
+      "query_heads": 12,
+      "kv_heads": 2,
+      "gqa_group_size": 6,
+      "head_dim": 128,
+      "page_size": 16,
+      "kv_layout": "HND"
+    },
+    "sequence": [
+      "valid",
+      "invalid_page_index",
+      "valid",
+      "valid",
+      "drain",
+      "valid_same_runtime",
+      "drain",
+      "two_valid_concurrent_drain"
+    ],
+    "result": {
+      "exit_code": 0,
+      "submitted_delta": 7,
+      "completed_delta": 7,
+      "failed_delta": 1,
+      "typed_error_kind": "PageIndexOutOfRange",
+      "fifo_failed_position": 2,
+      "same_runtime_reuse": true,
+      "last_operator": "Bf16PagedBatchDecode",
+      "last_layout": "HND",
+      "last_algorithm": "PagedBatchDecodeTokenParallel8",
+      "adapter_zero_copy": true,
+      "external_regions": 9,
+      "adapter_device_to_device_copies": 0,
+      "concurrent_drains": [
+        0,
+        2
+      ],
+      "valid_output_max_abs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  },
+  "checks": [
+    {
+      "name": "workspace formatting",
+      "command": "cargo +nightly-2026-04-03 fmt --all -- --check",
+      "exit_code": 0
+    },
+    {
+      "name": "paged-attention Oxide feature check",
+      "command": "PATH=/usr/local/cuda/bin:$PATH CARGO_HOME=<cargo-home> CUDAFORGE_THREADS=2 CARGO_BUILD_JOBS=2 cargo +nightly-2026-04-03 check -p mistralrs-paged-attn --features oxide-infer",
+      "exit_code": 0
+    },
+    {
+      "name": "model example Oxide feature check",
+      "command": "PATH=/usr/local/cuda/bin:$PATH CARGO_HOME=<cargo-home> CUDAFORGE_THREADS=2 CARGO_BUILD_JOBS=2 cargo +nightly-2026-04-03 check -p mistralrs --bin oxide_paged_attn --features oxide-infer",
+      "exit_code": 0
+    },
+    {
+      "name": "model example strict Clippy",
+      "command": "PATH=/usr/local/cuda/bin:$PATH CARGO_HOME=<cargo-home> CUDAFORGE_THREADS=2 CARGO_BUILD_JOBS=2 cargo +nightly-2026-04-03 clippy -p mistralrs --bin oxide_paged_attn --features oxide-infer -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "name": "paged plan tests through cuda-oxide linker",
+      "command": "PATH=/usr/local/cuda/bin:$PATH CARGO_HOME=<cargo-home> CUDA_OXIDE_BACKEND=<cuda-oxide-backend>/librustc_codegen_cuda.so CUDAFORGE_THREADS=2 CARGO_BUILD_JOBS=2 cargo +nightly-2026-04-03 oxide test --arch sm_90 -- -p mistralrs-core paged_attention::plan::tests --features oxide-infer --lib",
+      "exit_code": 0
+    },
+    {
+      "name": "generic adapter GPU recovery gate",
+      "command": "PATH=/usr/local/cuda/bin:$PATH CARGO_HOME=<cargo-home> CUDA_OXIDE_BACKEND=<cuda-oxide-backend>/librustc_codegen_cuda.so CUDAFORGE_THREADS=2 CARGO_BUILD_JOBS=2 cargo +nightly-2026-04-03 oxide run --bin oxide_adapter_gate --features oxide-infer --arch sm_90",
+      "exit_code": 0
+    },
+    {
+      "name": "Qwen2.5-1.5B Oxide model run",
+      "command": "MISTRALRS_OXIDE_INFER=1 OXIDE_MODEL_PATH=<model-root>/qwen2.5-1.5b-instruct target/release/oxide_paged_attn",
+      "exit_code": 0
+    },
+    {
+      "name": "Qwen2.5-1.5B baseline model run",
+      "command": "OXIDE_BASELINE=1 OXIDE_MODEL_PATH=<model-root>/qwen2.5-1.5b-instruct target/release/oxide_paged_attn",
+      "exit_code": 0
+    },
+    {
+      "name": "Qwen2.5-7B Oxide model run",
+      "command": "MISTRALRS_OXIDE_INFER=1 OXIDE_MODEL_PATH=<model-root>/qwen2.5-7b-instruct target/release/oxide_paged_attn",
+      "exit_code": 0
+    },
+    {
+      "name": "Qwen2.5-7B baseline model run",
+      "command": "OXIDE_BASELINE=1 OXIDE_MODEL_PATH=<model-root>/qwen2.5-7b-instruct target/release/oxide_paged_attn",
+      "exit_code": 0
+    }
+  ],
+  "qualified_observations": [
+    "The immutable Oxide source builds without a sibling checkout.",
+    "Both GQA group sizes completed the same deterministic eight-token sequence as the standard provider.",
+    "Each model completed 196 of 196 Oxide paged-decode submissions with no provider error.",
+    "The adapter gate preserved FIFO completion, returned a typed invalid-page error, recovered on the same runtime, and matched the CPU oracle exactly for all valid outputs.",
+    "The adapter itself issued no device-to-device copy and registered nine external regions in the observed paged-decode calls."
+  ],
+  "excluded_claims": [
+    "The recorded request timings are not a latency, throughput, TTFT, TPOT, or provider performance comparison because the runs were not repeated or counterbalanced and CUDA driver JIT caching differed.",
+    "Adapter zero-copy does not establish that the full model or engine is zero-copy.",
+    "Equal selected tokens do not establish bitwise equality of logits or hidden states.",
+    "This record does not qualify CUDA Graph execution, speculative decoding, tensor parallelism, multiple GPUs, multiple streams, multiple concurrent models, larger batches, panic recovery, or abandoned forwards.",
+    "This is integration evidence, not a production-readiness claim."
+  ]
+}

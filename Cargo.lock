@@ -3502,26 +3502,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "oxide-infer"
-version = "1.0.0-alpha.1"
-dependencies = [
- "half",
-]
-
-[[package]]
-name = "oxide-infer-cuda"
-version = "1.0.0-alpha.1"
-dependencies = [
- "cuda-core 0.2.1",
- "cuda-device",
- "cuda-host",
- "cudarc 0.19.8",
- "half",
- "oxide-infer",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "loop9"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4079,11 +4059,11 @@ dependencies = [
  "dispatch2",
  "float8",
  "half",
- "oxide-infer",
- "oxide-infer-cuda",
  "mistralrs-metal-compile",
  "objc2-foundation",
  "objc2-metal",
+ "oxide-infer",
+ "oxide-infer-cuda",
  "thiserror 2.0.18",
 ]
 
@@ -4718,6 +4698,28 @@ version = "0.2.1"
 source = "git+https://github.com/NVlabs/cuda-oxide.git?rev=868f8ec4ef900bae7e67e7f9508b2da66eee5472#868f8ec4ef900bae7e67e7f9508b2da66eee5472"
 dependencies = [
  "object 0.36.7",
+]
+
+[[package]]
+name = "oxide-infer"
+version = "1.0.0-alpha.1"
+source = "git+https://github.com/feichai0017/oxide-infer.git?rev=840b0658abc616a7dbd88b468f550965928d7f68#840b0658abc616a7dbd88b468f550965928d7f68"
+dependencies = [
+ "half",
+]
+
+[[package]]
+name = "oxide-infer-cuda"
+version = "1.0.0-alpha.1"
+source = "git+https://github.com/feichai0017/oxide-infer.git?rev=840b0658abc616a7dbd88b468f550965928d7f68#840b0658abc616a7dbd88b468f550965928d7f68"
+dependencies = [
+ "cuda-core 0.2.1",
+ "cuda-device",
+ "cuda-host",
+ "cudarc 0.19.8",
+ "half",
+ "oxide-infer",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

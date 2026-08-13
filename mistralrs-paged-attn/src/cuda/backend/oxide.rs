@@ -18,13 +18,17 @@ use oxide_infer_cuda::memory::{ReadDeviceRegion, ReadWriteDeviceRegion};
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::time::{Duration, Instant};
 
 const HEAD_DIM: usize = 128;
 const PAGE_SIZE: usize = 16;
 const COMMAND_CAPACITY: usize = 3;
 const MAX_IN_FLIGHT: usize = 128;
 const BINDING_COUNT: usize = 9;
+const OXIDE_PROFILE_ENV: &str = "MISTRALRS_OXIDE_PROFILE";
+
+static OXIDE_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct RuntimeKey {
@@ -308,6 +312,10 @@ pub struct OxidePagedDecodeStats {
     adapter_zero_copy: bool,
     external_regions: usize,
     adapter_device_to_device_copies: usize,
+    profile_enabled: bool,
+    enqueue_host_nanoseconds: u64,
+    drain_host_nanoseconds: u64,
+    drain_calls: u64,
 }
 
 impl OxidePagedDecodeStats {
@@ -348,6 +356,22 @@ impl OxidePagedDecodeStats {
         self.adapter_device_to_device_copies
     }
 
+    pub const fn profile_enabled(self) -> bool {
+        self.profile_enabled
+    }
+
+    pub const fn enqueue_host_nanoseconds(self) -> u64 {
+        self.enqueue_host_nanoseconds
+    }
+
+    pub const fn drain_host_nanoseconds(self) -> u64 {
+        self.drain_host_nanoseconds
+    }
+
+    pub const fn drain_calls(self) -> u64 {
+        self.drain_calls
+    }
+
     fn record_submission(&mut self, trace: &EngineExecutionTrace) {
         self.submitted = self.submitted.saturating_add(1);
         self.last_operator = Some(trace.operator());
@@ -363,6 +387,21 @@ impl OxidePagedDecodeStats {
         if failed {
             self.failed = self.failed.saturating_add(1);
         }
+    }
+
+    fn record_enqueue_profile(&mut self, duration: Duration) {
+        self.profile_enabled = true;
+        self.enqueue_host_nanoseconds = self
+            .enqueue_host_nanoseconds
+            .saturating_add(duration_nanoseconds(duration));
+    }
+
+    fn record_drain_profile(&mut self, duration: Duration) {
+        self.profile_enabled = true;
+        self.drain_host_nanoseconds = self
+            .drain_host_nanoseconds
+            .saturating_add(duration_nanoseconds(duration));
+        self.drain_calls = self.drain_calls.saturating_add(1);
     }
 }
 
@@ -730,6 +769,7 @@ impl OxidePagedDecodeRuntime {
         logical_page_count: usize,
         paged_kv_last_page_len: &Tensor,
     ) -> Result<Tensor> {
+        let profile_started = oxide_profile_enabled().then(Instant::now);
         validate_inputs(
             query,
             key_cache,
@@ -827,11 +867,25 @@ impl OxidePagedDecodeRuntime {
         let mut state = self.lock_state()?;
         state.stats.record_submission(completion.trace());
         state.pending.push_back(PendingDecode { completion });
+        if let Some(started) = profile_started {
+            state.stats.record_enqueue_profile(started.elapsed());
+        }
         Ok(output)
     }
 
     /// Waits for all queued decode commands in submission order.
     pub fn drain(&self) -> std::result::Result<usize, OxidePagedDecodeDrainError> {
+        let profile_started = oxide_profile_enabled().then(Instant::now);
+        let result = self.drain_inner();
+        if let Some(started) = profile_started {
+            if let Ok(mut state) = self.state.lock() {
+                state.stats.record_drain_profile(started.elapsed());
+            }
+        }
+        result
+    }
+
+    fn drain_inner(&self) -> std::result::Result<usize, OxidePagedDecodeDrainError> {
         let mut drained = 0;
         let mut first_error = None;
         let _lifecycle = self.lock_lifecycle_for_drain(drained)?;
@@ -991,6 +1045,14 @@ fn offset_pointer<T>(base: u64, offset: usize) -> Result<u64> {
 
 fn oxide_external_error(context: &str, error: impl std::fmt::Display) -> Error {
     oxide_error(format!("{context}: {error}"))
+}
+
+fn oxide_profile_enabled() -> bool {
+    *OXIDE_PROFILE_ENABLED.get_or_init(|| std::env::var(OXIDE_PROFILE_ENV).as_deref() == Ok("1"))
+}
+
+fn duration_nanoseconds(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
 fn oxide_error(message: impl Into<String>) -> Error {

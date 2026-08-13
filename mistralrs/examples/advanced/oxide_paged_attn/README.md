@@ -6,16 +6,10 @@ provider.
 
 ## Checkout
 
-Keep both repositories under one parent directory:
-
-```text
-workspace/
-|-- oxide-infer/  # d27b6e5
-`-- mistral.rs/  # this overlay, based on 8010b6a0
-```
-
-The optional Cargo dependencies use `../oxide-infer`. A standalone Mistral.rs
-checkout cannot resolve the `oxide-infer` feature.
+The optional Cargo dependencies resolve Oxide Infer from the immutable Git
+commit `840b0658abc616a7dbd88b468f550965928d7f68`. A standalone Mistral.rs
+checkout can therefore build the `oxide-infer` feature without a sibling
+Oxide Infer checkout.
 
 ## Admitted contract
 
@@ -59,9 +53,90 @@ Run the adapter recovery gate from the paged-attention crate:
 
 ```bash
 cd mistralrs-paged-attn
-cargo +nightly-2026-04-03 oxide run --bin oxide_adapter_h20 \
+cargo +nightly-2026-04-03 oxide run --bin oxide_adapter_gate \
   --features oxide-infer --arch sm_90
 ```
+
+## Current source requalification
+
+The 2026-08-12 run used Oxide Infer commit `02faf27b` and exercised
+two local BF16 model configurations on one GPU:
+
+- Qwen2.5-1.5B-Instruct, 12 query heads, 2 KV heads, GQA group size 6.
+- Qwen2.5-7B-Instruct, 28 query heads, 4 KV heads, GQA group size 7.
+
+For each model, Oxide completed 196 of 196 paged-decode operator submissions
+with no provider error. Oxide and the default Mistral.rs provider emitted the
+same eight selected token strings and decoded text. The adapter recorded HND,
+the 8-warp token-parallel algorithm, nine external regions, and no
+adapter-issued device-to-device copy.
+
+The generic adapter recovery gate completed seven commands, reported one typed
+`PageIndexOutOfRange` failure at FIFO position two, and reused the same runtime.
+All six valid outputs matched the CPU oracle exactly.
+
+See the [current-source requalification record](./h20-current-oxide-02faf27-two-model-requalification-20260812.json)
+for source and model hashes, raw selected-token log probabilities, command
+outcomes, and excluded claims. The recorded request timings are observations,
+not a performance comparison: the runs did not use a repeated, counterbalanced
+benchmark protocol and CUDA driver JIT caching differed between runs.
+
+## Steady-state benchmark
+
+Build the benchmark once through cuda-oxide, then run its six-block suite:
+
+```bash
+cargo +nightly-2026-04-03 oxide build --arch sm_90 -- \
+  --bin oxide_paged_attn_bench --features oxide-infer --release
+
+MISTRALRS_OXIDE_PROFILE=1 target/release/oxide_paged_attn_bench suite \
+  --model-path /path/to/qwen2.5-1.5b-instruct \
+  --model-name Qwen2.5-1.5B-Instruct \
+  --output /path/to/result.json
+```
+
+The suite uses an Oxide, baseline, baseline, Oxide, Oxide, baseline schedule.
+Each block runs in a fresh process, loads one model, disables prefix caching and
+CUDA Graphs, performs five unmeasured warmups, and then measures 20 streaming
+requests. The reported TTFT starts before request submission and ends at the
+first non-empty generated content. TPOT covers the remaining completion tokens.
+The suite also records end-to-end latency, decode throughput, CUDA driver
+device-used memory deltas from the post-context baseline, per-block medians,
+provider counters, and pooled nearest-rank P50/P95 values. The memory delta is a
+device-wide steady-state observation, not a process-private or allocator peak.
+
+The fixed prompt is expected to reach the 64-token cap. The suite fails closed
+if a request ends early, output changes within or across provider blocks, an
+Oxide command fails, or the adapter issues a device-to-device copy.
+
+### Current steady-state evidence
+
+The 2026-08-13 binding-reuse run used commit `d7c86540`, Oxide Infer `840b0658`,
+BF16, one stream, and one recorded NVIDIA H20. Each row pools 60 measured requests per
+provider across three fresh-process blocks. Both model directories matched the
+file hashes in the current-source requalification record above. Lower TTFT and
+TPOT are better; higher decode throughput is better.
+
+| Model | TTFT P50, Oxide / standard | TPOT P50, Oxide / standard | Decode P50, Oxide / standard | Oxide / standard decode |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen2.5-1.5B-Instruct | 12.46 / 9.51 ms | 5.083 / 4.826 ms | 196.74 / 207.16 tok/s | 0.950x |
+| Qwen2.5-7B-Instruct | 15.14 / 14.76 ms | 9.788 / 9.477 ms | 102.17 / 105.52 tok/s | 0.968x |
+
+All 211,680 measured Oxide layer-decode submissions completed with zero
+provider failure and zero adapter-issued device-to-device copy. Both providers
+had the same post-warmup device-memory delta for each model: 4,674 MiB for 1.5B
+and 22,146 MiB for 7B. Reusing settled binding storage raised Oxide decode
+throughput by 26.5% for 1.5B and 12.9% for 7B relative to the earlier run.
+Oxide remains 5.0% below standard decode throughput for 1.5B and 3.2% below for
+7B in this request shape. Optional adapter profiling measured average host
+enqueue costs of 20.60 and 21.17 microseconds per layer, respectively.
+
+FlashInfer is not a third row in this comparison. These models use GQA group
+sizes 6 and 7, which are outside the FlashInfer decode dispatch supported here,
+so the matched baseline is standard Mistral.rs paged attention. See the full
+[1.5B record](./h20-binding-reuse-qwen2.5-1.5b-840b065-20260813.json) and
+[7B record](./h20-binding-reuse-qwen2.5-7b-840b065-20260813.json) for raw
+samples, P95 values, counters, protocol metadata, and excluded claims.
 
 ## Historical H20 results
 
@@ -137,6 +212,6 @@ Before this provider becomes a general engine option:
 - Carry a typed, linear runner authority through the model forward path.
 - Define fail-closed behavior for a panic or abandoned model forward.
 - Model HND cache writes with explicit read-write storage guards.
-- Replace the sibling path dependency with an immutable published source.
+- Promote the immutable Git pin to a released crate dependency when available.
 - Qualify Graph, speculative decode, tensor parallelism, multiple GPUs,
   multiple streams, multiple models, and larger batches.
