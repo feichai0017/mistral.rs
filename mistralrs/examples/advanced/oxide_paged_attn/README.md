@@ -68,6 +68,9 @@ target/release/oxide_adapter_bench --output /tmp/oxide-adapter.json \
   --warmups 100 --iterations 1000
 ```
 
+Add `--comparison oxide-standard` to compare the trusted Oxide provider with
+standard Mistral.rs paged attention instead of the default checked/trusted A/B.
+
 ## Current source requalification
 
 The 2026-08-12 run used Oxide Infer commit `02faf27b` and exercised
@@ -325,6 +328,46 @@ See [replicate one](./h20-r9-checked-trusted-r1-717c486-20260813.json.gz) and
 [replicate two](./h20-r9-checked-trusted-r2-717c486-20260813.json.gz). Their
 SHA-256 digests are `6f3440544f9865f60f646cb39671afef927f188db6fe02477297615e9d74537c`
 and `ddcecae521f3c8345706dc018280bc9547770998949a9749f17ac11534a1610a`.
+
+### Same-process Oxide/standard A/B
+
+Commit `4c883aff8` extends the same binary with an `oxide-standard` comparison.
+Both providers receive the same BF16 query, logical KV values, physical-page
+mapping, context lengths, scale, and batch-16 D128/GQA6 shape. Their real cache
+layouts are materialized before timing: HND for Oxide and the packed key/value
+layouts used by standard paged attention. Oxide selects
+`PagedBatchDecodeTokenParallel8`; standard selects `PagedAttentionV1` for the
+recorded 81-to-96-token contexts. Optional Oxide host profiling is disabled so
+the outer host timer treats both providers equally.
+
+Two fresh processes used the trusted, standard, standard, trusted, trusted,
+standard schedule, with 100 warmups and 1,000 measured calls per block. The
+pooled result contains 6,000 calls per provider. All 6,000 Oxide submissions
+completed without failure or adapter-issued D2D copy. Both providers matched
+the CPU reference: maximum absolute error was `1.1920929e-7` for Oxide and
+`9.765625e-4` for standard.
+
+| Pooled P50 | Oxide trusted | Standard V1 | Standard change |
+| --- | ---: | ---: | ---: |
+| Host provider call | 13.218 us | 6.369 us | -51.8% |
+| Complete CUDA window | 22.368 us | 16.096 us | -28.0% |
+
+The device ratio is `0.720x` standard/Oxide, leaving a 6.272 us gap in one
+provider invocation. This is close in magnitude to the earlier serving gap and
+shows that host metadata validation was not the remaining primary bottleneck.
+
+This is a provider-path comparison, not a pure kernel comparison. The Oxide
+window includes its cross-stream event bridge and its attention work; its
+adapter also allocates output, LSE, and status tensors, while standard launches
+directly on the engine stream and returns only output. Cache layout setup is
+excluded for both providers. The next diagnostic should time the Oxide
+attention launch on its internal stream and test an engine path that does not
+request unused LSE/status storage.
+
+See [replicate one](./h20-r10-oxide-standard-r1-4c883af-20260813.json.gz) and
+[replicate two](./h20-r10-oxide-standard-r2-4c883af-20260813.json.gz). Their
+SHA-256 digests are `fdf2d7f642e6b2439ec5747fa7d91cdd5f95fd5b402afefa970db834c340bb65`
+and `0a6290b1db754b646299f5fcaf91f7e359d40c3fe4b5e6b3e9b55cf4dbe8551a`.
 
 ## Historical H20 results
 

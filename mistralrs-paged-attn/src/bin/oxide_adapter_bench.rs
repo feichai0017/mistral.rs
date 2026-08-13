@@ -3,7 +3,7 @@
 use candle_core::cuda::cudarc::driver::{sys::CUevent_flags, CudaStream};
 use candle_core::{Device, Tensor};
 use half::bf16;
-use mistralrs_paged_attn::{OxidePagedDecodeRuntime, OxidePagedDecodeStats};
+use mistralrs_paged_attn::{paged_attention, OxidePagedDecodeRuntime, OxidePagedDecodeStats};
 use oxide_infer::{paged_batch_decode_bf16_reference, Bf16PagedBatchDecodeSpec, PagedKvLayout};
 use oxide_infer_cuda::interop::{EngineAlgorithm, EngineMetadataValidation, EngineOperator};
 use serde::Serialize;
@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-const SCHEMA: &str = "mistralrs.oxide-adapter-checked-trusted.v1";
+const CHECKED_TRUSTED_SCHEMA: &str = "mistralrs.oxide-adapter-checked-trusted.v2";
+const OXIDE_STANDARD_SCHEMA: &str = "mistralrs.oxide-adapter-provider.v1";
 const DEFAULT_WARMUPS: usize = 50;
 const DEFAULT_ITERATIONS: usize = 500;
 const BATCH_SIZE: usize = 16;
@@ -25,14 +26,23 @@ const HEAD_DIM: usize = 128;
 const PAGE_SIZE: usize = 16;
 const PAGES_PER_SEQUENCE: usize = 6;
 const LOGICAL_PAGE_COUNT: usize = BATCH_SIZE * PAGES_PER_SEQUENCE;
+const STANDARD_KEY_PACK: usize = 16 / std::mem::size_of::<bf16>();
 const OUTPUT_MAX_ABS_LIMIT: f32 = 0.015_625;
-const SCHEDULE: [Validation; 6] = [
+const CHECKED_TRUSTED_SCHEDULE: [Validation; 6] = [
     Validation::Checked,
     Validation::Trusted,
     Validation::Trusted,
     Validation::Checked,
     Validation::Checked,
     Validation::Trusted,
+];
+const OXIDE_STANDARD_SCHEDULE: [Validation; 6] = [
+    Validation::Trusted,
+    Validation::Standard,
+    Validation::Standard,
+    Validation::Trusted,
+    Validation::Trusted,
+    Validation::Standard,
 ];
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -42,13 +52,45 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 enum Validation {
     Checked,
     Trusted,
+    Standard,
 }
 
 impl Validation {
-    const fn expected_metadata_validation(self) -> EngineMetadataValidation {
+    const fn expected_metadata_validation(self) -> Option<EngineMetadataValidation> {
         match self {
-            Self::Checked => EngineMetadataValidation::DeviceChecked,
-            Self::Trusted => EngineMetadataValidation::TrustedByAdapter,
+            Self::Checked => Some(EngineMetadataValidation::DeviceChecked),
+            Self::Trusted => Some(EngineMetadataValidation::TrustedByAdapter),
+            Self::Standard => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ComparisonMode {
+    CheckedTrusted,
+    OxideStandard,
+}
+
+impl ComparisonMode {
+    const fn schema(self) -> &'static str {
+        match self {
+            Self::CheckedTrusted => CHECKED_TRUSTED_SCHEMA,
+            Self::OxideStandard => OXIDE_STANDARD_SCHEMA,
+        }
+    }
+
+    const fn schedule(self) -> [Validation; 6] {
+        match self {
+            Self::CheckedTrusted => CHECKED_TRUSTED_SCHEDULE,
+            Self::OxideStandard => OXIDE_STANDARD_SCHEDULE,
+        }
+    }
+
+    const fn paths(self) -> (Validation, Validation) {
+        match self {
+            Self::CheckedTrusted => (Validation::Checked, Validation::Trusted),
+            Self::OxideStandard => (Validation::Trusted, Validation::Standard),
         }
     }
 }
@@ -58,6 +100,7 @@ struct Args {
     output: PathBuf,
     warmups: usize,
     iterations: usize,
+    comparison: ComparisonMode,
 }
 
 #[derive(Serialize)]
@@ -70,7 +113,10 @@ struct Shape {
     page_size: usize,
     pages_per_sequence: usize,
     logical_page_count: usize,
+    context_lengths: Vec<usize>,
     layout: &'static str,
+    oxide_algorithm: &'static str,
+    standard_algorithm: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -78,9 +124,12 @@ struct Protocol {
     same_process: bool,
     same_runtime: bool,
     same_tensors: bool,
+    same_logical_inputs: bool,
+    comparison: ComparisonMode,
     schedule: Vec<Validation>,
     warmups_per_block: usize,
     measured_submissions_per_block: usize,
+    cache_layout_materialization_timed: bool,
     host_timing_definition: &'static str,
     device_timing_definition: &'static str,
     percentile_method: &'static str,
@@ -102,6 +151,7 @@ struct StatsDelta {
     submitted: u64,
     completed: u64,
     failed: u64,
+    profile_enabled: bool,
     enqueue_host_microseconds_per_submission: f64,
     interop_host_microseconds_per_submission: f64,
     engine_provider_metadata_host_microseconds_per_submission: f64,
@@ -113,13 +163,13 @@ struct StatsDelta {
 struct BlockRecord {
     block_index: usize,
     validation: Validation,
-    metadata_validation: String,
+    metadata_validation: Option<String>,
     output_max_abs: f32,
     host_enqueue_samples_microseconds: Vec<f64>,
     device_window_samples_microseconds: Vec<f64>,
     host_enqueue_microseconds: Distribution,
     device_window_microseconds: Distribution,
-    stats: StatsDelta,
+    stats: Option<StatsDelta>,
 }
 
 #[derive(Serialize)]
@@ -134,10 +184,12 @@ struct ValidationSummary {
 
 #[derive(Serialize)]
 struct Comparison {
-    trusted_over_checked_host_enqueue_p50: f64,
-    trusted_over_checked_device_window_p50: f64,
-    trusted_minus_checked_host_enqueue_p50_microseconds: f64,
-    trusted_minus_checked_device_window_p50_microseconds: f64,
+    left: Validation,
+    right: Validation,
+    right_over_left_host_enqueue_p50: f64,
+    right_over_left_device_window_p50: f64,
+    right_minus_left_host_enqueue_p50_microseconds: f64,
+    right_minus_left_device_window_p50_microseconds: f64,
 }
 
 #[derive(Serialize)]
@@ -179,61 +231,84 @@ struct Inputs {
     query: Tensor,
     key_cache: Tensor,
     value_cache: Tensor,
+    standard_key_cache: Tensor,
+    standard_value_cache: Tensor,
     page_indptr: Tensor,
     page_indices: Tensor,
     last_page_len: Tensor,
+    block_tables: Tensor,
+    context_lens: Tensor,
+    context_lengths: Vec<usize>,
+    max_context_len: usize,
     expected_output: Vec<bf16>,
+}
+
+struct BenchContext<'a> {
+    runtime: &'a OxidePagedDecodeRuntime,
+    inputs: &'a Inputs,
+    stream: &'a CudaStream,
+    profile_enabled: bool,
 }
 
 fn main() -> Result<()> {
     let args = parse_args()?;
-    std::env::set_var("MISTRALRS_OXIDE_PROFILE", "1");
+    let profile_enabled = args.comparison == ComparisonMode::CheckedTrusted;
+    std::env::set_var(
+        "MISTRALRS_OXIDE_PROFILE",
+        if profile_enabled { "1" } else { "0" },
+    );
     let device = Device::new_cuda_with_stream(0)?;
     let stream = device.as_cuda_device()?.cuda_stream();
     let runtime = OxidePagedDecodeRuntime::new();
     let inputs = make_inputs(&device)?;
+    let schedule = args.comparison.schedule();
+    let (left_path, right_path) = args.comparison.paths();
+    let context = BenchContext {
+        runtime: &runtime,
+        inputs: &inputs,
+        stream: &stream,
+        profile_enabled,
+    };
 
-    verify_mode(&runtime, &inputs, Validation::Checked)?;
-    verify_mode(&runtime, &inputs, Validation::Trusted)?;
+    verify_mode(&context, left_path)?;
+    verify_mode(&context, right_path)?;
 
-    let mut blocks = Vec::with_capacity(SCHEDULE.len());
-    for (block_index, validation) in SCHEDULE.into_iter().enumerate() {
+    let mut blocks = Vec::with_capacity(schedule.len());
+    for (block_index, validation) in schedule.into_iter().enumerate() {
         eprintln!(
             "running block {}/{} validation={validation:?}",
             block_index + 1,
-            SCHEDULE.len()
+            schedule.len()
         );
         blocks.push(run_block(
             block_index,
             validation,
             args.warmups,
             args.iterations,
-            &runtime,
-            &inputs,
-            &stream,
+            &context,
         )?);
     }
 
-    let checked = summarize(Validation::Checked, &blocks)?;
-    let trusted = summarize(Validation::Trusted, &blocks)?;
+    let left = summarize(left_path, &blocks)?;
+    let right = summarize(right_path, &blocks)?;
     let comparison = Comparison {
-        trusted_over_checked_host_enqueue_p50: ratio(
-            trusted.host_enqueue_microseconds.p50,
-            checked.host_enqueue_microseconds.p50,
+        left: left_path,
+        right: right_path,
+        right_over_left_host_enqueue_p50: ratio(
+            right.host_enqueue_microseconds.p50,
+            left.host_enqueue_microseconds.p50,
         )?,
-        trusted_over_checked_device_window_p50: ratio(
-            trusted.device_window_microseconds.p50,
-            checked.device_window_microseconds.p50,
+        right_over_left_device_window_p50: ratio(
+            right.device_window_microseconds.p50,
+            left.device_window_microseconds.p50,
         )?,
-        trusted_minus_checked_host_enqueue_p50_microseconds: trusted.host_enqueue_microseconds.p50
-            - checked.host_enqueue_microseconds.p50,
-        trusted_minus_checked_device_window_p50_microseconds: trusted
-            .device_window_microseconds
-            .p50
-            - checked.device_window_microseconds.p50,
+        right_minus_left_host_enqueue_p50_microseconds: right.host_enqueue_microseconds.p50
+            - left.host_enqueue_microseconds.p50,
+        right_minus_left_device_window_p50_microseconds: right.device_window_microseconds.p50
+            - left.device_window_microseconds.p50,
     };
     let record = Record {
-        schema: SCHEMA,
+        schema: args.comparison.schema(),
         unix_time_seconds: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
         source_commit: git_output(&["rev-parse", "HEAD"] )?,
         source_worktree_clean: git_output(&["status", "--porcelain"] )?.is_empty(),
@@ -247,21 +322,31 @@ fn main() -> Result<()> {
             page_size: PAGE_SIZE,
             pages_per_sequence: PAGES_PER_SEQUENCE,
             logical_page_count: LOGICAL_PAGE_COUNT,
-            layout: "HND",
+            context_lengths: inputs.context_lengths.clone(),
+            layout: match args.comparison {
+                ComparisonMode::CheckedTrusted => "HND",
+                ComparisonMode::OxideStandard => "HND and standard packed cache layouts",
+            },
+            oxide_algorithm: "PagedBatchDecodeTokenParallel8",
+            standard_algorithm: (args.comparison == ComparisonMode::OxideStandard)
+                .then_some("PagedAttentionV1"),
         },
         protocol: Protocol {
             same_process: true,
-            same_runtime: true,
-            same_tensors: true,
-            schedule: SCHEDULE.to_vec(),
+            same_runtime: args.comparison == ComparisonMode::CheckedTrusted,
+            same_tensors: args.comparison == ComparisonMode::CheckedTrusted,
+            same_logical_inputs: true,
+            comparison: args.comparison,
+            schedule: schedule.to_vec(),
             warmups_per_block: args.warmups,
             measured_submissions_per_block: args.iterations,
+            cache_layout_materialization_timed: false,
             host_timing_definition: "wall time of one adapter enqueue call, excluding drain",
-            device_timing_definition: "CUDA events on the external stream around the Oxide pre-event/kernel/post-event bridge",
+            device_timing_definition: "CUDA events on the common external stream around one complete provider invocation",
             percentile_method: "nearest-rank",
         },
         blocks,
-        summaries: vec![checked, trusted],
+        summaries: vec![left, right],
         comparison,
         excluded_claims: [
             "The device window includes Oxide cross-stream event handoff, not only attention kernel execution.",
@@ -276,6 +361,7 @@ fn parse_args() -> Result<Args> {
     let mut output = None;
     let mut warmups = DEFAULT_WARMUPS;
     let mut iterations = DEFAULT_ITERATIONS;
+    let mut comparison = ComparisonMode::CheckedTrusted;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let value = args
@@ -285,6 +371,13 @@ fn parse_args() -> Result<Args> {
             "--output" => output = Some(PathBuf::from(value)),
             "--warmups" => warmups = value.parse()?,
             "--iterations" => iterations = value.parse()?,
+            "--comparison" => {
+                comparison = match value.as_str() {
+                    "checked-trusted" => ComparisonMode::CheckedTrusted,
+                    "oxide-standard" => ComparisonMode::OxideStandard,
+                    _ => return Err(format!("unknown comparison {value}").into()),
+                }
+            }
             _ => return Err(format!("unknown argument {arg}").into()),
         }
     }
@@ -295,6 +388,7 @@ fn parse_args() -> Result<Args> {
         output: output.ok_or("--output is required")?,
         warmups,
         iterations,
+        comparison,
     })
 }
 
@@ -311,6 +405,8 @@ fn make_inputs(device: &Device) -> Result<Inputs> {
     let query_host = deterministic_bf16(spec.query_numel(), 101);
     let key_host = deterministic_bf16(spec.kv_pages_numel(), 211);
     let value_host = deterministic_bf16(spec.kv_pages_numel(), 307);
+    let standard_key_host = standard_key_cache(&key_host);
+    let standard_value_host = standard_value_cache(&value_host);
     let page_indptr_host = (0..=BATCH_SIZE)
         .map(|index| i32::try_from(index * PAGES_PER_SEQUENCE))
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -319,6 +415,24 @@ fn make_inputs(device: &Device) -> Result<Inputs> {
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let last_page_len_host = (0..BATCH_SIZE)
         .map(|index| i32::try_from(1 + (index * 3) % PAGE_SIZE))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let context_lens_host = last_page_len_host
+        .iter()
+        .map(|last_page_len| {
+            u32::try_from((PAGES_PER_SEQUENCE - 1) * PAGE_SIZE + *last_page_len as usize)
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let max_context_len = context_lens_host
+        .iter()
+        .copied()
+        .max()
+        .ok_or("context lengths are empty")? as usize;
+    let context_lengths = context_lens_host
+        .iter()
+        .map(|value| *value as usize)
+        .collect();
+    let block_tables_host = (0..LOGICAL_PAGE_COUNT)
+        .map(u32::try_from)
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let mut expected_output = vec![bf16::ZERO; spec.output_numel()];
     let mut expected_lse = vec![0.0_f32; spec.lse_numel()];
@@ -345,11 +459,75 @@ fn make_inputs(device: &Device) -> Result<Inputs> {
             (MAX_NUM_PAGES, KV_HEADS, PAGE_SIZE, HEAD_DIM),
             device,
         )?,
+        standard_key_cache: Tensor::from_vec(
+            standard_key_host,
+            (
+                MAX_NUM_PAGES,
+                KV_HEADS,
+                HEAD_DIM / STANDARD_KEY_PACK,
+                PAGE_SIZE,
+                STANDARD_KEY_PACK,
+            ),
+            device,
+        )?,
+        standard_value_cache: Tensor::from_vec(
+            standard_value_host,
+            (MAX_NUM_PAGES, KV_HEADS, HEAD_DIM, PAGE_SIZE),
+            device,
+        )?,
         page_indptr: Tensor::from_vec(page_indptr_host, BATCH_SIZE + 1, device)?,
         page_indices: Tensor::from_vec(page_indices_host, LOGICAL_PAGE_COUNT, device)?,
         last_page_len: Tensor::from_vec(last_page_len_host, BATCH_SIZE, device)?,
+        block_tables: Tensor::from_vec(
+            block_tables_host,
+            (BATCH_SIZE, PAGES_PER_SEQUENCE),
+            device,
+        )?,
+        context_lens: Tensor::from_vec(context_lens_host, BATCH_SIZE, device)?,
+        context_lengths,
+        max_context_len,
         expected_output,
     })
+}
+
+fn standard_key_cache(hnd: &[bf16]) -> Vec<bf16> {
+    let mut standard = vec![bf16::ZERO; hnd.len()];
+    for block in 0..MAX_NUM_PAGES {
+        for head in 0..KV_HEADS {
+            for token in 0..PAGE_SIZE {
+                for offset in 0..HEAD_DIM {
+                    let source =
+                        (((block * KV_HEADS + head) * PAGE_SIZE + token) * HEAD_DIM) + offset;
+                    let target = ((((block * KV_HEADS + head) * (HEAD_DIM / STANDARD_KEY_PACK)
+                        + offset / STANDARD_KEY_PACK)
+                        * PAGE_SIZE
+                        + token)
+                        * STANDARD_KEY_PACK)
+                        + offset % STANDARD_KEY_PACK;
+                    standard[target] = hnd[source];
+                }
+            }
+        }
+    }
+    standard
+}
+
+fn standard_value_cache(hnd: &[bf16]) -> Vec<bf16> {
+    let mut standard = vec![bf16::ZERO; hnd.len()];
+    for block in 0..MAX_NUM_PAGES {
+        for head in 0..KV_HEADS {
+            for token in 0..PAGE_SIZE {
+                for offset in 0..HEAD_DIM {
+                    let source =
+                        (((block * KV_HEADS + head) * PAGE_SIZE + token) * HEAD_DIM) + offset;
+                    let target =
+                        (((block * KV_HEADS + head) * HEAD_DIM + offset) * PAGE_SIZE) + token;
+                    standard[target] = hnd[source];
+                }
+            }
+        }
+    }
+    standard
 }
 
 fn run_block(
@@ -357,71 +535,92 @@ fn run_block(
     validation: Validation,
     warmups: usize,
     iterations: usize,
-    runtime: &OxidePagedDecodeRuntime,
-    inputs: &Inputs,
-    stream: &CudaStream,
+    context: &BenchContext<'_>,
 ) -> Result<BlockRecord> {
     for _ in 0..warmups {
-        let output = enqueue(runtime, inputs, validation)?;
-        if runtime.drain()? != 1 {
-            return Err("warmup drain did not settle one submission".into());
-        }
+        let output = enqueue(context.runtime, context.inputs, validation)?;
+        settle_submission(context.runtime, validation, context.stream)?;
         drop(output);
     }
-    let before = stats_snapshot(runtime.stats()?);
-    let start_event = stream
+    let before = stats_snapshot(context.runtime.stats()?);
+    let start_event = context
+        .stream
         .context()
         .new_event(Some(CUevent_flags::CU_EVENT_DEFAULT))?;
-    let end_event = stream
+    let end_event = context
+        .stream
         .context()
         .new_event(Some(CUevent_flags::CU_EVENT_DEFAULT))?;
     let mut host_enqueue_microseconds = Vec::with_capacity(iterations);
     let mut device_window_microseconds = Vec::with_capacity(iterations);
     let mut output_max_abs = 0.0_f32;
     for iteration in 0..iterations {
-        start_event.record(stream)?;
+        start_event.record(context.stream)?;
         let host_started = Instant::now();
-        let output = enqueue(runtime, inputs, validation)?;
+        let output = enqueue(context.runtime, context.inputs, validation)?;
         host_enqueue_microseconds.push(host_started.elapsed().as_secs_f64() * 1_000_000.0);
-        end_event.record(stream)?;
-        if runtime.drain()? != 1 {
-            return Err("measured drain did not settle one submission".into());
+        end_event.record(context.stream)?;
+        if validation != Validation::Standard && context.runtime.drain()? != 1 {
+            return Err("measured Oxide drain did not settle one submission".into());
         }
         device_window_microseconds.push(f64::from(start_event.elapsed_ms(&end_event)?) * 1_000.0);
         if iteration == 0 {
-            output_max_abs = compare_output(&output, &inputs.expected_output)?;
+            output_max_abs = compare_output(&output, &context.inputs.expected_output)?;
         }
         drop(output);
     }
-    let actual = runtime.stats()?;
-    validate_stats(actual, before, validation, iterations)?;
+    let actual = context.runtime.stats()?;
+    validate_stats(
+        actual,
+        before,
+        validation,
+        iterations,
+        context.profile_enabled,
+    )?;
     let host_enqueue_distribution = distribution(host_enqueue_microseconds.iter().copied())?;
     let device_window_distribution = distribution(device_window_microseconds.iter().copied())?;
     Ok(BlockRecord {
         block_index,
         validation,
-        metadata_validation: format!("{:?}", actual.last_metadata_validation()),
+        metadata_validation: validation
+            .expected_metadata_validation()
+            .map(|value| format!("{value:?}")),
         output_max_abs,
         host_enqueue_samples_microseconds: host_enqueue_microseconds,
         device_window_samples_microseconds: device_window_microseconds,
         host_enqueue_microseconds: host_enqueue_distribution,
         device_window_microseconds: device_window_distribution,
-        stats: stats_delta(before, stats_snapshot(actual))?,
+        stats: (validation != Validation::Standard)
+            .then(|| stats_delta(before, stats_snapshot(actual), actual.profile_enabled()))
+            .transpose()?,
     })
 }
 
-fn verify_mode(
+fn verify_mode(context: &BenchContext<'_>, validation: Validation) -> Result<()> {
+    let before = stats_snapshot(context.runtime.stats()?);
+    let output = enqueue(context.runtime, context.inputs, validation)?;
+    settle_submission(context.runtime, validation, context.stream)?;
+    compare_output(&output, &context.inputs.expected_output)?;
+    validate_stats(
+        context.runtime.stats()?,
+        before,
+        validation,
+        1,
+        context.profile_enabled,
+    )
+}
+
+fn settle_submission(
     runtime: &OxidePagedDecodeRuntime,
-    inputs: &Inputs,
     validation: Validation,
+    stream: &CudaStream,
 ) -> Result<()> {
-    let before = stats_snapshot(runtime.stats()?);
-    let output = enqueue(runtime, inputs, validation)?;
-    if runtime.drain()? != 1 {
-        return Err("correctness drain did not settle one submission".into());
+    if validation == Validation::Standard {
+        stream.synchronize()?;
+    } else if runtime.drain()? != 1 {
+        return Err("Oxide drain did not settle one submission".into());
     }
-    compare_output(&output, &inputs.expected_output)?;
-    validate_stats(runtime.stats()?, before, validation, 1)
+    Ok(())
 }
 
 #[allow(unsafe_code)]
@@ -459,6 +658,20 @@ fn enqueue(
                 )
             }
         }
+        Validation::Standard => paged_attention(
+            &inputs.query,
+            None,
+            None,
+            &inputs.standard_key_cache,
+            &inputs.standard_value_cache,
+            &inputs.block_tables,
+            &inputs.context_lens,
+            None,
+            inputs.max_context_len,
+            (HEAD_DIM as f32).sqrt().recip(),
+            1.0,
+            None,
+        ),
     }
 }
 
@@ -467,20 +680,30 @@ fn validate_stats(
     before: StatsSnapshot,
     validation: Validation,
     submissions: usize,
+    profile_enabled: bool,
 ) -> Result<()> {
     let expected = u64::try_from(submissions)?;
     let after = stats_snapshot(actual);
+    if validation == Validation::Standard {
+        if after.submitted != before.submitted
+            || after.completed != before.completed
+            || after.failed != before.failed
+        {
+            return Err(format!("standard path changed Oxide stats: {actual:?}").into());
+        }
+        return Ok(());
+    }
     if after.submitted.checked_sub(before.submitted) != Some(expected)
         || after.completed.checked_sub(before.completed) != Some(expected)
         || after.failed.checked_sub(before.failed) != Some(0)
         || actual.last_operator() != Some(EngineOperator::Bf16PagedBatchDecode)
         || actual.last_layout() != Some(PagedKvLayout::Hnd)
         || actual.last_algorithm() != Some(EngineAlgorithm::PagedBatchDecodeTokenParallel8)
-        || actual.last_metadata_validation() != Some(validation.expected_metadata_validation())
+        || actual.last_metadata_validation() != validation.expected_metadata_validation()
         || !actual.adapter_zero_copy()
         || actual.external_regions() != 9
         || actual.adapter_device_to_device_copies() != 0
-        || !actual.profile_enabled()
+        || actual.profile_enabled() != profile_enabled
     {
         return Err(format!("adapter stats mismatch for {validation:?}: {actual:?}").into());
     }
@@ -501,7 +724,11 @@ fn stats_snapshot(stats: OxidePagedDecodeStats) -> StatsSnapshot {
     }
 }
 
-fn stats_delta(before: StatsSnapshot, after: StatsSnapshot) -> Result<StatsDelta> {
+fn stats_delta(
+    before: StatsSnapshot,
+    after: StatsSnapshot,
+    profile_enabled: bool,
+) -> Result<StatsDelta> {
     let submitted = checked_delta(after.submitted, before.submitted, "submitted")?;
     if submitted == 0 {
         return Err("stats delta has no submissions".into());
@@ -510,6 +737,7 @@ fn stats_delta(before: StatsSnapshot, after: StatsSnapshot) -> Result<StatsDelta
         submitted,
         completed: checked_delta(after.completed, before.completed, "completed")?,
         failed: checked_delta(after.failed, before.failed, "failed")?,
+        profile_enabled,
         enqueue_host_microseconds_per_submission: per_submission_microseconds(
             checked_delta(
                 after.enqueue_host_nanoseconds,
@@ -717,26 +945,48 @@ fn write_json(path: &Path, record: &Record) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{distribution, nearest_rank, Validation, SCHEDULE};
+    use super::{
+        distribution, nearest_rank, Validation, CHECKED_TRUSTED_SCHEDULE, OXIDE_STANDARD_SCHEDULE,
+    };
 
     #[test]
-    fn schedule_is_position_balanced() {
+    fn checked_trusted_schedule_is_position_balanced() {
         assert_eq!(
-            SCHEDULE
+            CHECKED_TRUSTED_SCHEDULE
                 .iter()
                 .filter(|validation| **validation == Validation::Checked)
                 .count(),
             3
         );
         assert_eq!(
-            SCHEDULE
+            CHECKED_TRUSTED_SCHEDULE
                 .iter()
                 .filter(|validation| **validation == Validation::Trusted)
                 .count(),
             3
         );
-        assert_eq!(SCHEDULE[0], SCHEDULE[4]);
-        assert_eq!(SCHEDULE[1], SCHEDULE[2]);
+        assert_eq!(CHECKED_TRUSTED_SCHEDULE[0], CHECKED_TRUSTED_SCHEDULE[4]);
+        assert_eq!(CHECKED_TRUSTED_SCHEDULE[1], CHECKED_TRUSTED_SCHEDULE[2]);
+    }
+
+    #[test]
+    fn oxide_standard_schedule_is_position_balanced() {
+        assert_eq!(
+            OXIDE_STANDARD_SCHEDULE
+                .iter()
+                .filter(|validation| **validation == Validation::Trusted)
+                .count(),
+            3
+        );
+        assert_eq!(
+            OXIDE_STANDARD_SCHEDULE
+                .iter()
+                .filter(|validation| **validation == Validation::Standard)
+                .count(),
+            3
+        );
+        assert_eq!(OXIDE_STANDARD_SCHEDULE[0], OXIDE_STANDARD_SCHEDULE[4]);
+        assert_eq!(OXIDE_STANDARD_SCHEDULE[1], OXIDE_STANDARD_SCHEDULE[2]);
     }
 
     #[test]
