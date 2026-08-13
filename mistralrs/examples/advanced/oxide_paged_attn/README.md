@@ -7,7 +7,7 @@ provider.
 ## Checkout
 
 The optional Cargo dependencies resolve Oxide Infer from the immutable Git
-commit `d3f7e4e324f52e25994e68c2ed3361aa4058eba5`. A standalone Mistral.rs
+commit `fbf722985d8e8ff9595731bd75f20ead446371cb`. A standalone Mistral.rs
 checkout can therefore build the `oxide-infer` feature without a sibling
 Oxide Infer checkout.
 
@@ -70,6 +70,10 @@ target/release/oxide_adapter_bench --output /tmp/oxide-adapter.json \
 
 Add `--comparison oxide-standard` to compare the trusted Oxide provider with
 standard Mistral.rs paged attention instead of the default checked/trusted A/B.
+Use `--comparison bridge-direct` to isolate stream-handoff cost, or
+`--comparison direct-standard` to compare direct Oxide with standard paged
+attention. Direct-stream comparisons reject device profiling because that
+diagnostic is defined only for the event bridge.
 Add `--oxide-device-profile 1` to collect diagnostic CUDA-event segments for
 the Oxide cross-stream handoff and provider work. This option is disabled by
 default and its extra events intentionally perturb the outer device window.
@@ -415,6 +419,59 @@ See [replicate one](./h20-r11-device-profile-r1-2789721-20260813.json.gz) and
 [replicate two](./h20-r11-device-profile-r2-2789721-20260813.json.gz). Their
 SHA-256 digests are `a9f0c46897185d0a0b1c86de3d8b169477a0af2a896a0ad5f55c4c2543d3b300`
 and `a4dce4b27fa68a51232891b1dc1de7bbe19286cba1a795e1db4fe51bed4d5ef1`.
+
+### Direct engine-stream result
+
+Mistral.rs commit `18628b249` pins Oxide Infer `fbf72298` and cuda-oxide
+`e107c06d`. The direct path wraps the engine stream without destruction
+ownership and submits through the same typed command queue, checked bindings,
+provider dispatch, device-status protocol, FIFO completion, and recovery path.
+The event-bridged path remains the default.
+
+The H20 recovery gate passed in both modes. Each mode settled seven commands,
+reported the intentional invalid page as a typed failure at FIFO position two,
+reused the same runtime, matched every valid output exactly, and synchronized
+the external stream after dropping the runtime. This verifies that the direct
+wrapper does not destroy the engine-owned stream in the exercised lifecycle.
+
+Two fresh processes per comparison used 100 warmups and 1,000 measured calls
+in each of six balanced blocks. Each row pools 6,000 calls per path. All 18,000
+measured Oxide calls completed without failure or adapter-issued D2D copy.
+Oxide's maximum absolute error was `1.1920929e-7`; standard's was
+`9.765625e-4`.
+
+| Pooled P50 | Event bridge | Direct stream | Direct change |
+| --- | ---: | ---: | ---: |
+| Host provider call | 13.341 us | 12.473 us | -6.5% |
+| Complete CUDA window | 22.496 us | 18.752 us | -16.6% |
+
+Every bridge/direct block moved in the same direction. The direct result also
+remained stable across the separate standard comparison: its device P50 was
+`18.528 us`, versus `15.936 us` for standard V1.
+
+| Pooled P50 | Oxide direct | Standard V1 | Standard change |
+| --- | ---: | ---: | ---: |
+| Host provider call | 12.193 us | 6.310 us | -48.2% |
+| Complete CUDA window | 18.528 us | 15.936 us | -14.0% |
+
+Direct submission removes 3.744 us from the matched bridge comparison, while
+2.592 us remains between direct Oxide and standard in the second matched
+comparison. The earlier R10 gap was 6.272 us, so the residual is 58.7% smaller;
+that percentage is cross-run context, not a single-process three-way result.
+The next diagnostic should separate host setup, output/LSE allocation, and
+attention-kernel work; another stream-handoff change is not the first target.
+These are full provider windows for one synthetic shape, not pure-kernel or
+end-to-end model timings.
+
+See bridge/direct [replicate one](./h20-r12-bridge-direct-r1-18628b2-20260813.json.gz)
+and [replicate two](./h20-r12-bridge-direct-r2-18628b2-20260813.json.gz), plus
+direct/standard [replicate one](./h20-r12-direct-standard-r1-18628b2-20260813.json.gz)
+and [replicate two](./h20-r12-direct-standard-r2-18628b2-20260813.json.gz).
+Their SHA-256 digests, in that order, are
+`f04144bdefe81dc75e5b1be3f00e205a56974a770ece10a1307afc9d89dfb820`,
+`84e2a99bc23e1362e69b5c7cc0f97f6f4cec152f34fbeb4a61e25eca5ed3d5fc`,
+`bcc3a49247340d066d25fd8f3dbd20efaf49a5d9b13822940806bdabe2628ed9`,
+and `3062b73f2a1f2d5277fdb0a8e5de689c42871852dc52e2d95dc5a8c9245223ab`.
 
 ## Historical H20 results
 

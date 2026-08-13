@@ -24,6 +24,7 @@ const OUTPUT_MAX_ABS_LIMIT: f32 = 0.015_625;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let device = Device::new_cuda_with_stream(0)?;
+    let stream = device.as_cuda_device()?.cuda_stream();
     let runtime = OxidePagedDecodeRuntime::new();
     let spec = Bf16PagedBatchDecodeSpec::new(
         BATCH_SIZE,
@@ -226,20 +227,24 @@ fn main() -> Result<(), Box<dyn Error>> {
     if runtime.drain()? != 0 {
         return Err("concurrent drainers left a queued completion".into());
     }
+    let handoff = actual
+        .last_stream_handoff()
+        .expect("gate recorded a handoff");
+    drop(runtime);
+    stream.synchronize()?;
 
     println!(
         "gate=oxide_adapter status=pass sequence=valid,invalid,valid,valid,drain,valid,drain \
          submitted_delta=7 completed_delta=7 failed_delta=1 typed_page_error=true \
          fifo_failed_position=2 same_runtime_reuse=true layout=HND gqa_group=6 \
          algorithm=PagedBatchDecodeTokenParallel8 handoff={:?} adapter_zero_copy=true \
-         adapter_d2d_copies=0 concurrent_drains=0,2 valid_before_max_abs={before_max_abs:.9e} \
+         adapter_d2d_copies=0 external_stream_survived_runtime_drop=true \
+         concurrent_drains=0,2 valid_before_max_abs={before_max_abs:.9e} \
          valid_after_max_abs={after_max_abs:.9e} valid_tail_max_abs={tail_max_abs:.9e} \
          reuse_max_abs={reuse_max_abs:.9e} \
          concurrent_first_max_abs={concurrent_first_max_abs:.9e} \
          concurrent_second_max_abs={concurrent_second_max_abs:.9e}",
-        actual
-            .last_stream_handoff()
-            .expect("gate recorded a handoff")
+        handoff
     );
     Ok(())
 }
