@@ -5,7 +5,9 @@ use candle_core::{Device, Tensor};
 use half::bf16;
 use mistralrs_paged_attn::{paged_attention, OxidePagedDecodeRuntime, OxidePagedDecodeStats};
 use oxide_infer::{paged_batch_decode_bf16_reference, Bf16PagedBatchDecodeSpec, PagedKvLayout};
-use oxide_infer_cuda::interop::{EngineAlgorithm, EngineMetadataValidation, EngineOperator};
+use oxide_infer_cuda::interop::{
+    EngineAlgorithm, EngineMetadataValidation, EngineOperator, EngineStreamHandoff,
+};
 use serde::Serialize;
 use std::cmp::Ordering;
 use std::error::Error;
@@ -16,6 +18,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 const CHECKED_TRUSTED_SCHEMA: &str = "mistralrs.oxide-adapter-checked-trusted.v2";
 const OXIDE_STANDARD_SCHEMA: &str = "mistralrs.oxide-adapter-provider.v2";
+const BRIDGE_DIRECT_SCHEMA: &str = "mistralrs.oxide-adapter-stream-handoff.v1";
+const DIRECT_STANDARD_SCHEMA: &str = "mistralrs.oxide-adapter-provider.v3";
 const DEFAULT_WARMUPS: usize = 50;
 const DEFAULT_ITERATIONS: usize = 500;
 const BATCH_SIZE: usize = 16;
@@ -44,6 +48,22 @@ const OXIDE_STANDARD_SCHEDULE: [Validation; 6] = [
     Validation::Trusted,
     Validation::Standard,
 ];
+const BRIDGE_DIRECT_SCHEDULE: [Validation; 6] = [
+    Validation::Trusted,
+    Validation::Direct,
+    Validation::Direct,
+    Validation::Trusted,
+    Validation::Trusted,
+    Validation::Direct,
+];
+const DIRECT_STANDARD_SCHEDULE: [Validation; 6] = [
+    Validation::Direct,
+    Validation::Standard,
+    Validation::Standard,
+    Validation::Direct,
+    Validation::Direct,
+    Validation::Standard,
+];
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -52,6 +72,7 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 enum Validation {
     Checked,
     Trusted,
+    Direct,
     Standard,
 }
 
@@ -59,7 +80,15 @@ impl Validation {
     const fn expected_metadata_validation(self) -> Option<EngineMetadataValidation> {
         match self {
             Self::Checked => Some(EngineMetadataValidation::DeviceChecked),
-            Self::Trusted => Some(EngineMetadataValidation::TrustedByAdapter),
+            Self::Trusted | Self::Direct => Some(EngineMetadataValidation::TrustedByAdapter),
+            Self::Standard => None,
+        }
+    }
+
+    const fn expected_handoff(self) -> Option<EngineStreamHandoff> {
+        match self {
+            Self::Checked | Self::Trusted => Some(EngineStreamHandoff::ExternalEventBridge),
+            Self::Direct => Some(EngineStreamHandoff::ExternalStreamDirect),
             Self::Standard => None,
         }
     }
@@ -70,6 +99,8 @@ impl Validation {
 enum ComparisonMode {
     CheckedTrusted,
     OxideStandard,
+    BridgeDirect,
+    DirectStandard,
 }
 
 impl ComparisonMode {
@@ -77,6 +108,8 @@ impl ComparisonMode {
         match self {
             Self::CheckedTrusted => CHECKED_TRUSTED_SCHEMA,
             Self::OxideStandard => OXIDE_STANDARD_SCHEMA,
+            Self::BridgeDirect => BRIDGE_DIRECT_SCHEMA,
+            Self::DirectStandard => DIRECT_STANDARD_SCHEMA,
         }
     }
 
@@ -84,6 +117,8 @@ impl ComparisonMode {
         match self {
             Self::CheckedTrusted => CHECKED_TRUSTED_SCHEDULE,
             Self::OxideStandard => OXIDE_STANDARD_SCHEDULE,
+            Self::BridgeDirect => BRIDGE_DIRECT_SCHEDULE,
+            Self::DirectStandard => DIRECT_STANDARD_SCHEDULE,
         }
     }
 
@@ -91,7 +126,17 @@ impl ComparisonMode {
         match self {
             Self::CheckedTrusted => (Validation::Checked, Validation::Trusted),
             Self::OxideStandard => (Validation::Trusted, Validation::Standard),
+            Self::BridgeDirect => (Validation::Trusted, Validation::Direct),
+            Self::DirectStandard => (Validation::Direct, Validation::Standard),
         }
+    }
+
+    const fn includes_standard(self) -> bool {
+        matches!(self, Self::OxideStandard | Self::DirectStandard)
+    }
+
+    const fn includes_direct(self) -> bool {
+        matches!(self, Self::BridgeDirect | Self::DirectStandard)
     }
 }
 
@@ -173,6 +218,7 @@ struct BlockRecord {
     block_index: usize,
     validation: Validation,
     metadata_validation: Option<String>,
+    stream_handoff: Option<String>,
     output_max_abs: f32,
     host_enqueue_samples_microseconds: Vec<f64>,
     device_window_samples_microseconds: Vec<f64>,
@@ -259,14 +305,27 @@ struct Inputs {
 
 struct BenchContext<'a> {
     runtime: &'a OxidePagedDecodeRuntime,
+    direct_runtime: &'a OxidePagedDecodeRuntime,
     inputs: &'a Inputs,
     stream: &'a CudaStream,
     profile_enabled: bool,
     device_profile_enabled: bool,
 }
 
+impl BenchContext<'_> {
+    fn runtime(&self, validation: Validation) -> &OxidePagedDecodeRuntime {
+        match validation {
+            Validation::Direct => self.direct_runtime,
+            Validation::Checked | Validation::Trusted | Validation::Standard => self.runtime,
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let args = parse_args()?;
+    if args.oxide_device_profile && args.comparison.includes_direct() {
+        return Err("direct-stream comparisons do not support device profiling".into());
+    }
     let profile_enabled = args.comparison == ComparisonMode::CheckedTrusted;
     std::env::set_var(
         "MISTRALRS_OXIDE_PROFILE",
@@ -276,14 +335,17 @@ fn main() -> Result<()> {
         "MISTRALRS_OXIDE_DEVICE_PROFILE",
         if args.oxide_device_profile { "1" } else { "0" },
     );
+    std::env::set_var("MISTRALRS_OXIDE_DIRECT_STREAM", "0");
     let device = Device::new_cuda_with_stream(0)?;
     let stream = device.as_cuda_device()?.cuda_stream();
     let runtime = OxidePagedDecodeRuntime::new();
+    let direct_runtime = OxidePagedDecodeRuntime::new_direct();
     let inputs = make_inputs(&device)?;
     let schedule = args.comparison.schedule();
     let (left_path, right_path) = args.comparison.paths();
     let context = BenchContext {
         runtime: &runtime,
+        direct_runtime: &direct_runtime,
         inputs: &inputs,
         stream: &stream,
         profile_enabled,
@@ -344,17 +406,21 @@ fn main() -> Result<()> {
             logical_page_count: LOGICAL_PAGE_COUNT,
             context_lengths: inputs.context_lengths.clone(),
             layout: match args.comparison {
-                ComparisonMode::CheckedTrusted => "HND",
-                ComparisonMode::OxideStandard => "HND and standard packed cache layouts",
+                ComparisonMode::CheckedTrusted | ComparisonMode::BridgeDirect => "HND",
+                ComparisonMode::OxideStandard | ComparisonMode::DirectStandard => {
+                    "HND and standard packed cache layouts"
+                }
             },
             oxide_algorithm: "PagedBatchDecodeTokenParallel8",
-            standard_algorithm: (args.comparison == ComparisonMode::OxideStandard)
+            standard_algorithm: args
+                .comparison
+                .includes_standard()
                 .then_some("PagedAttentionV1"),
         },
         protocol: Protocol {
             same_process: true,
             same_runtime: args.comparison == ComparisonMode::CheckedTrusted,
-            same_tensors: args.comparison == ComparisonMode::CheckedTrusted,
+            same_tensors: !args.comparison.includes_standard(),
             same_logical_inputs: true,
             comparison: args.comparison,
             oxide_device_profile_enabled: args.oxide_device_profile,
@@ -371,7 +437,7 @@ fn main() -> Result<()> {
         summaries: vec![left, right],
         comparison,
         excluded_claims: [
-            "The device window includes Oxide cross-stream event handoff, not only attention kernel execution.",
+            "The device window covers a complete provider call and is not a pure-kernel timing boundary.",
             "This single-layer synthetic shape does not establish end-to-end model or serving throughput.",
             "Results apply only to the recorded shape, software, hardware, and timing protocol.",
             "When Oxide internal device profiling is enabled, its extra timing events make the outer Oxide-versus-standard device comparison diagnostic only.",
@@ -399,6 +465,8 @@ fn parse_args() -> Result<Args> {
                 comparison = match value.as_str() {
                     "checked-trusted" => ComparisonMode::CheckedTrusted,
                     "oxide-standard" => ComparisonMode::OxideStandard,
+                    "bridge-direct" => ComparisonMode::BridgeDirect,
+                    "direct-standard" => ComparisonMode::DirectStandard,
                     _ => return Err(format!("unknown comparison {value}").into()),
                 }
             }
@@ -569,12 +637,13 @@ fn run_block(
     iterations: usize,
     context: &BenchContext<'_>,
 ) -> Result<BlockRecord> {
+    let runtime = context.runtime(validation);
     for _ in 0..warmups {
-        let output = enqueue(context.runtime, context.inputs, validation)?;
-        settle_submission(context.runtime, validation, context.stream)?;
+        let output = enqueue(runtime, context.inputs, validation)?;
+        settle_submission(runtime, validation, context.stream)?;
         drop(output);
     }
-    let before = stats_snapshot(context.runtime.stats()?);
+    let before = stats_snapshot(runtime.stats()?);
     let start_event = context
         .stream
         .context()
@@ -589,10 +658,10 @@ fn run_block(
     for iteration in 0..iterations {
         start_event.record(context.stream)?;
         let host_started = Instant::now();
-        let output = enqueue(context.runtime, context.inputs, validation)?;
+        let output = enqueue(runtime, context.inputs, validation)?;
         host_enqueue_microseconds.push(host_started.elapsed().as_secs_f64() * 1_000_000.0);
         end_event.record(context.stream)?;
-        if validation != Validation::Standard && context.runtime.drain()? != 1 {
+        if validation != Validation::Standard && runtime.drain()? != 1 {
             return Err("measured Oxide drain did not settle one submission".into());
         }
         device_window_microseconds.push(f64::from(start_event.elapsed_ms(&end_event)?) * 1_000.0);
@@ -601,7 +670,7 @@ fn run_block(
         }
         drop(output);
     }
-    let actual = context.runtime.stats()?;
+    let actual = runtime.stats()?;
     validate_stats(
         actual,
         before,
@@ -618,6 +687,9 @@ fn run_block(
         metadata_validation: validation
             .expected_metadata_validation()
             .map(|value| format!("{value:?}")),
+        stream_handoff: validation
+            .expected_handoff()
+            .map(|value| format!("{value:?}")),
         output_max_abs,
         host_enqueue_samples_microseconds: host_enqueue_microseconds,
         device_window_samples_microseconds: device_window_microseconds,
@@ -630,12 +702,13 @@ fn run_block(
 }
 
 fn verify_mode(context: &BenchContext<'_>, validation: Validation) -> Result<()> {
-    let before = stats_snapshot(context.runtime.stats()?);
-    let output = enqueue(context.runtime, context.inputs, validation)?;
-    settle_submission(context.runtime, validation, context.stream)?;
+    let runtime = context.runtime(validation);
+    let before = stats_snapshot(runtime.stats()?);
+    let output = enqueue(runtime, context.inputs, validation)?;
+    settle_submission(runtime, validation, context.stream)?;
     compare_output(&output, &context.inputs.expected_output)?;
     validate_stats(
-        context.runtime.stats()?,
+        runtime.stats()?,
         before,
         validation,
         1,
@@ -678,7 +751,7 @@ fn enqueue(
                 )
             }
         }
-        Validation::Trusted => {
+        Validation::Trusted | Validation::Direct => {
             // SAFETY: the benchmark additionally keeps the valid CSR metadata immutable for every submission.
             unsafe {
                 runtime.enqueue_trusted_paged_decode(
@@ -736,6 +809,7 @@ fn validate_stats(
         || actual.last_layout() != Some(PagedKvLayout::Hnd)
         || actual.last_algorithm() != Some(EngineAlgorithm::PagedBatchDecodeTokenParallel8)
         || actual.last_metadata_validation() != validation.expected_metadata_validation()
+        || actual.last_stream_handoff() != validation.expected_handoff()
         || !actual.adapter_zero_copy()
         || actual.external_regions() != 9
         || actual.adapter_device_to_device_copies() != 0
