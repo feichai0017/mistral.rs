@@ -122,6 +122,12 @@ struct OxideStatsDelta {
     adapter_zero_copy: bool,
     external_regions: usize,
     adapter_device_to_device_copies: usize,
+    profile_enabled: bool,
+    enqueue_host_nanoseconds: u64,
+    enqueue_host_microseconds_per_operator: Option<f64>,
+    drain_host_nanoseconds: u64,
+    drain_calls: u64,
+    drain_host_microseconds_per_forward: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -226,6 +232,9 @@ struct StatsSnapshot {
     submitted: u64,
     completed: u64,
     failed: u64,
+    enqueue_host_nanoseconds: u64,
+    drain_host_nanoseconds: u64,
+    drain_calls: u64,
 }
 
 #[tokio::main]
@@ -553,6 +562,9 @@ async fn oxide_stats_snapshot(model: &Model, provider: Provider) -> Result<Optio
             submitted: stats.submitted(),
             completed: stats.completed(),
             failed: stats.failed(),
+            enqueue_host_nanoseconds: stats.enqueue_host_nanoseconds(),
+            drain_host_nanoseconds: stats.drain_host_nanoseconds(),
+            drain_calls: stats.drain_calls(),
         })),
         (Provider::Oxide, None) => bail!("Oxide worker has no paged-decode runtime"),
         (Provider::Baseline, None) => Ok(None),
@@ -575,34 +587,65 @@ async fn oxide_stats_delta(
         .oxide_paged_decode_stats()
         .await?
         .context("missing final Oxide stats")?;
+    let submitted = after
+        .submitted
+        .checked_sub(before.submitted)
+        .context("Oxide submitted counter regressed")?;
+    let completed = after
+        .completed
+        .checked_sub(before.completed)
+        .context("Oxide completed counter regressed")?;
+    let failed = after
+        .failed
+        .checked_sub(before.failed)
+        .context("Oxide failed counter regressed")?;
+    let enqueue_host_nanoseconds = after
+        .enqueue_host_nanoseconds
+        .checked_sub(before.enqueue_host_nanoseconds)
+        .context("Oxide enqueue profile counter regressed")?;
+    let drain_host_nanoseconds = after
+        .drain_host_nanoseconds
+        .checked_sub(before.drain_host_nanoseconds)
+        .context("Oxide drain profile counter regressed")?;
+    let drain_calls = after
+        .drain_calls
+        .checked_sub(before.drain_calls)
+        .context("Oxide drain call counter regressed")?;
+    let profile_enabled = stats.profile_enabled();
+    if submitted == 0
+        || completed != submitted
+        || failed != 0
+        || !stats.adapter_zero_copy()
+        || stats.adapter_device_to_device_copies() != 0
+        || (profile_enabled && drain_calls == 0)
+    {
+        bail!(
+            "Oxide provider validation failed: submitted={submitted}, completed={completed}, \
+             failed={failed}, zero_copy={}, d2d_copies={}, profile_enabled={profile_enabled}, \
+             drain_calls={drain_calls}",
+            stats.adapter_zero_copy(),
+            stats.adapter_device_to_device_copies()
+        );
+    }
     let delta = OxideStatsDelta {
-        submitted: after
-            .submitted
-            .checked_sub(before.submitted)
-            .context("Oxide submitted counter regressed")?,
-        completed: after
-            .completed
-            .checked_sub(before.completed)
-            .context("Oxide completed counter regressed")?,
-        failed: after
-            .failed
-            .checked_sub(before.failed)
-            .context("Oxide failed counter regressed")?,
+        submitted,
+        completed,
+        failed,
         last_operator: format!("{:?}", stats.last_operator()),
         last_layout: format!("{:?}", stats.last_layout()),
         last_algorithm: format!("{:?}", stats.last_algorithm()),
         adapter_zero_copy: stats.adapter_zero_copy(),
         external_regions: stats.external_regions(),
         adapter_device_to_device_copies: stats.adapter_device_to_device_copies(),
+        profile_enabled,
+        enqueue_host_nanoseconds,
+        enqueue_host_microseconds_per_operator: profile_enabled
+            .then_some(enqueue_host_nanoseconds as f64 / submitted as f64 / 1_000.0),
+        drain_host_nanoseconds,
+        drain_calls,
+        drain_host_microseconds_per_forward: profile_enabled
+            .then_some(drain_host_nanoseconds as f64 / drain_calls as f64 / 1_000.0),
     };
-    if delta.submitted == 0
-        || delta.completed != delta.submitted
-        || delta.failed != 0
-        || !delta.adapter_zero_copy
-        || delta.adapter_device_to_device_copies != 0
-    {
-        bail!("Oxide provider validation failed: {delta:?}");
-    }
     Ok(Some(delta))
 }
 
