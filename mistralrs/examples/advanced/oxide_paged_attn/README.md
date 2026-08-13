@@ -57,6 +57,17 @@ cargo +nightly-2026-04-03 oxide run --bin oxide_adapter_gate \
   --features oxide-infer --arch sm_90
 ```
 
+Build and run the same-process checked/trusted adapter benchmark from the
+workspace root:
+
+```bash
+cargo +nightly-2026-04-03 oxide build --arch sm_90 -- \
+  --release -p mistralrs-paged-attn --features oxide-infer \
+  --bin oxide_adapter_bench
+target/release/oxide_adapter_bench --output /tmp/oxide-adapter.json \
+  --warmups 100 --iterations 1000
+```
+
 ## Current source requalification
 
 The 2026-08-12 run used Oxide Infer commit `02faf27b` and exercised
@@ -275,6 +286,45 @@ investigation should use a same-binary checked/trusted comparison or measure
 CUDA-event device time for the actual batched engine shapes. See serving
 [replicate one](./h20-r8-trusted-serving-r1-qwen2.5-1.5b-c16-bda213b-20260813.json.gz)
 and [replicate two](./h20-r8-trusted-serving-r2-qwen2.5-1.5b-c16-bda213b-20260813.json.gz).
+
+### Same-process checked/trusted A/B
+
+Commit `717c486bc` adds an adapter microbenchmark that switches between the
+public checked and trusted paths in one binary, process, runtime, stream, and
+set of immutable tensors. Its BF16/HND shape uses batch 16, 12 query heads, two
+KV heads, D128, page size 16, and six pages per sequence. The balanced schedule
+is checked, trusted, trusted, checked, checked, trusted. CUDA events on the
+external stream bracket the full Oxide pre-event, provider work, and post-event
+bridge.
+
+Two fresh processes each ran 100 warmups and 1,000 measured submissions per
+block. The pooled record contains 6,000 measured submissions per path. All
+12,000 submissions completed with zero failure and zero adapter-issued D2D
+copy. Both paths matched the CPU reference with maximum absolute error
+`1.1920929e-7`.
+
+| Pooled P50 | Checked | Trusted | Change |
+| --- | ---: | ---: | ---: |
+| Adapter host enqueue | 19.810 us | 14.139 us | -28.6% |
+| External-stream CUDA window | 34.048 us | 23.360 us | -31.4% |
+
+The profiled per-submission means also move in the expected stages: interop
+falls from 12.292 to 6.450 us, metadata launch host work falls from 3.938 us to
+zero, and the status-readback host bucket falls from 1.792 to 0.036 us. The
+block P50 values do not reverse direction in either process.
+
+The CUDA result proves that trusted metadata removes device-visible stream
+work as well as host submission work. It is not an attention-kernel-only
+measurement: the 10.688 us saved includes the removed metadata validator,
+status transfer, and their scheduling effects. The attention algorithm is the
+same `PagedBatchDecodeTokenParallel8` kernel in both paths. The next comparison
+should bracket trusted Oxide and standard Mistral.rs paged attention at this
+same layer shape to locate the remaining serving gap.
+
+See [replicate one](./h20-r9-checked-trusted-r1-717c486-20260813.json.gz) and
+[replicate two](./h20-r9-checked-trusted-r2-717c486-20260813.json.gz). Their
+SHA-256 digests are `6f3440544f9865f60f646cb39671afef927f188db6fe02477297615e9d74537c`
+and `ddcecae521f3c8345706dc018280bc9547770998949a9749f17ac11534a1610a`.
 
 ## Historical H20 results
 
