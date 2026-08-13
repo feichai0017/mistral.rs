@@ -81,7 +81,7 @@ outcomes, and excluded claims. The recorded request timings are observations,
 not a performance comparison: the runs did not use a repeated, counterbalanced
 benchmark protocol and CUDA driver JIT caching differed between runs.
 
-## Steady-state benchmark
+## Serving benchmark
 
 Build the benchmark once through cuda-oxide, then run its six-block suite:
 
@@ -92,18 +92,25 @@ cargo +nightly-2026-04-03 oxide build --arch sm_90 -- \
 MISTRALRS_OXIDE_PROFILE=1 target/release/oxide_paged_attn_bench suite \
   --model-path /path/to/qwen2.5-1.5b-instruct \
   --model-name Qwen2.5-1.5B-Instruct \
-  --output /path/to/result.json
+  --output /path/to/result.json \
+  --concurrency 4
 ```
 
 The suite uses an Oxide, baseline, baseline, Oxide, Oxide, baseline schedule.
 Each block runs in a fresh process, loads one model, disables prefix caching and
-CUDA Graphs, performs five unmeasured warmups, and then measures 20 streaming
-requests. The reported TTFT starts before request submission and ends at the
-first non-empty generated content. TPOT covers the remaining completion tokens.
-The suite also records end-to-end latency, decode throughput, CUDA driver
-device-used memory deltas from the post-context baseline, per-block medians,
-provider counters, and pooled nearest-rank P50/P95 values. The memory delta is a
-device-wide steady-state observation, not a process-private or allocator peak.
+CUDA Graphs, performs five unmeasured waves, and then measures 20 streaming
+waves. A barrier releases the requested number of requests together, and the
+model scheduler admits up to the same number of sequences. Concurrency defaults
+to one when the flag is omitted.
+
+The reported TTFT starts before each request submission and ends at its first
+non-empty generated content. TPOT covers the remaining completion tokens. Each
+wave additionally reports aggregate output tokens per second and requests per
+second from coordinated release through the final request completion. The suite
+also records end-to-end latency, CUDA driver device-used memory deltas from the
+post-context baseline, per-block medians, provider counters, and pooled
+nearest-rank P50/P95 values. The memory delta is a device-wide steady-state
+observation, not a process-private or allocator peak.
 
 The fixed prompt is expected to reach the 64-token cap. The suite fails closed
 if a request ends early, output changes within or across provider blocks, an
@@ -112,10 +119,10 @@ Oxide command fails, or the adapter issues a device-to-device copy.
 ### Current steady-state evidence
 
 The 2026-08-13 binding-reuse run used commit `d7c86540`, Oxide Infer `840b0658`,
-BF16, one stream, and one recorded NVIDIA H20. Each row pools 60 measured requests per
-provider across three fresh-process blocks. Both model directories matched the
-file hashes in the current-source requalification record above. Lower TTFT and
-TPOT are better; higher decode throughput is better.
+BF16, one stream, one request per wave, and one recorded NVIDIA H20. Each row
+pools 60 measured requests per provider across three fresh-process blocks. Both
+model directories matched the file hashes in the current-source requalification
+record above. Lower TTFT and TPOT are better; higher decode throughput is better.
 
 | Model | TTFT P50, Oxide / standard | TPOT P50, Oxide / standard | Decode P50, Oxide / standard | Oxide / standard decode |
 | --- | ---: | ---: | ---: | ---: |
