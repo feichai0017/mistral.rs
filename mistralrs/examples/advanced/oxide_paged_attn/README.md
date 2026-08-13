@@ -70,6 +70,9 @@ target/release/oxide_adapter_bench --output /tmp/oxide-adapter.json \
 
 Add `--comparison oxide-standard` to compare the trusted Oxide provider with
 standard Mistral.rs paged attention instead of the default checked/trusted A/B.
+Add `--oxide-device-profile 1` to collect diagnostic CUDA-event segments for
+the Oxide cross-stream handoff and provider work. This option is disabled by
+default and its extra events intentionally perturb the outer device window.
 
 ## Current source requalification
 
@@ -368,6 +371,50 @@ See [replicate one](./h20-r10-oxide-standard-r1-4c883af-20260813.json.gz) and
 [replicate two](./h20-r10-oxide-standard-r2-4c883af-20260813.json.gz). Their
 SHA-256 digests are `fdf2d7f642e6b2439ec5747fa7d91cdd5f95fd5b402afefa970db834c340bb65`
 and `0a6290b1db754b646299f5fcaf91f7e359d40c3fe4b5e6b3e9b55cf4dbe8551a`.
+
+### Oxide device-segment diagnostic
+
+Mistral.rs commit `278972158` pins Oxide Infer `39058b6d` and enables optional
+timing events in each interop handoff slot. Successful traces report four
+ordered CUDA timeline intervals: external-stream start to provider start,
+provider start to provider/status completion, provider completion to external
+stream reacquisition, and the complete internal interval. The ordinary queue
+does not create or record these timing events.
+
+Two fresh H20 processes repeated the balanced Oxide/standard schedule with 100
+warmups and 1,000 measured calls per block. The records contain 6,000 measured
+Oxide calls and 6,000 standard calls. Every Oxide call completed, emitted one
+device profile, retained nine external regions, and issued no adapter D2D copy.
+Maximum absolute error against the CPU reference remained `1.1920929e-7` for
+Oxide and `9.765625e-4` for standard.
+
+| Instrumented Oxide interval | Replicate 1 mean | Replicate 2 mean | Pooled mean | Pooled share |
+| --- | ---: | ---: | ---: | ---: |
+| Pre-handoff bridge | 4.201 us | 4.312 us | 4.257 us | 16.4% |
+| Provider work | 12.373 us | 13.186 us | 12.779 us | 49.3% |
+| Post-handoff bridge | 9.094 us | 8.679 us | 8.887 us | 34.3% |
+| Both bridge segments | 13.296 us | 12.991 us | 13.144 us | 50.7% |
+| Complete internal interval | 25.669 us | 26.177 us | 25.923 us | 100.0% |
+
+The pooled standard outer-window P50 was `16.032 us`. Oxide's provider-only
+mean was `12.779 us`, but these are not matched timing boundaries or a pure
+kernel A/B: Oxide runs on its private stream, while the standard window is
+recorded on the engine stream. No kernel-performance advantage is claimed.
+The profiled Oxide outer-window P50 was `35.008 us`; it is excluded from the
+provider comparison because four diagnostic events add observable overhead.
+
+This result changes the next optimization target. In the instrumented Oxide
+timeline the two event-bridge segments are 50.7%, slightly larger than provider
+work. A direct, non-owning engine-stream submission path should therefore be
+tested before changing the attention kernel. LSE cannot simply be removed:
+the current kernel writes it. Trusted metadata does not read status, but status
+remains part of the checked binding protocol, so removing that allocation also
+requires an explicit trusted-only ABI rather than an adapter shortcut.
+
+See [replicate one](./h20-r11-device-profile-r1-2789721-20260813.json.gz) and
+[replicate two](./h20-r11-device-profile-r2-2789721-20260813.json.gz). Their
+SHA-256 digests are `a9f0c46897185d0a0b1c86de3d8b169477a0af2a896a0ad5f55c4c2543d3b300`
+and `a4dce4b27fa68a51232891b1dc1de7bbe19286cba1a795e1db4fe51bed4d5ef1`.
 
 ## Historical H20 results
 

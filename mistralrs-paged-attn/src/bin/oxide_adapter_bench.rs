@@ -15,7 +15,7 @@ use std::process::Command;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 const CHECKED_TRUSTED_SCHEMA: &str = "mistralrs.oxide-adapter-checked-trusted.v2";
-const OXIDE_STANDARD_SCHEMA: &str = "mistralrs.oxide-adapter-provider.v1";
+const OXIDE_STANDARD_SCHEMA: &str = "mistralrs.oxide-adapter-provider.v2";
 const DEFAULT_WARMUPS: usize = 50;
 const DEFAULT_ITERATIONS: usize = 500;
 const BATCH_SIZE: usize = 16;
@@ -101,6 +101,7 @@ struct Args {
     warmups: usize,
     iterations: usize,
     comparison: ComparisonMode,
+    oxide_device_profile: bool,
 }
 
 #[derive(Serialize)]
@@ -126,12 +127,14 @@ struct Protocol {
     same_tensors: bool,
     same_logical_inputs: bool,
     comparison: ComparisonMode,
+    oxide_device_profile_enabled: bool,
     schedule: Vec<Validation>,
     warmups_per_block: usize,
     measured_submissions_per_block: usize,
     cache_layout_materialization_timed: bool,
     host_timing_definition: &'static str,
     device_timing_definition: &'static str,
+    oxide_internal_device_timing_definition: &'static str,
     percentile_method: &'static str,
 }
 
@@ -152,11 +155,17 @@ struct StatsDelta {
     completed: u64,
     failed: u64,
     profile_enabled: bool,
+    device_profile_enabled: bool,
+    device_profiled_completions: u64,
     enqueue_host_microseconds_per_submission: f64,
     interop_host_microseconds_per_submission: f64,
     engine_provider_metadata_host_microseconds_per_submission: f64,
     engine_status_readback_host_microseconds_per_submission: f64,
     drain_host_microseconds_per_submission: f64,
+    engine_total_device_microseconds_per_submission: f64,
+    engine_pre_handoff_device_microseconds_per_submission: f64,
+    engine_provider_device_microseconds_per_submission: f64,
+    engine_post_handoff_device_microseconds_per_submission: f64,
 }
 
 #[derive(Serialize)]
@@ -212,7 +221,7 @@ struct Record {
     blocks: Vec<BlockRecord>,
     summaries: Vec<ValidationSummary>,
     comparison: Comparison,
-    excluded_claims: [&'static str; 3],
+    excluded_claims: [&'static str; 4],
 }
 
 #[derive(Clone, Copy)]
@@ -220,11 +229,16 @@ struct StatsSnapshot {
     submitted: u64,
     completed: u64,
     failed: u64,
+    device_profiled_completions: u64,
     enqueue_host_nanoseconds: u64,
     interop_host_nanoseconds: u64,
     engine_provider_metadata_host_nanoseconds: u64,
     engine_status_readback_host_nanoseconds: u64,
     drain_host_nanoseconds: u64,
+    engine_total_device_nanoseconds: u64,
+    engine_pre_handoff_device_nanoseconds: u64,
+    engine_provider_device_nanoseconds: u64,
+    engine_post_handoff_device_nanoseconds: u64,
 }
 
 struct Inputs {
@@ -248,6 +262,7 @@ struct BenchContext<'a> {
     inputs: &'a Inputs,
     stream: &'a CudaStream,
     profile_enabled: bool,
+    device_profile_enabled: bool,
 }
 
 fn main() -> Result<()> {
@@ -256,6 +271,10 @@ fn main() -> Result<()> {
     std::env::set_var(
         "MISTRALRS_OXIDE_PROFILE",
         if profile_enabled { "1" } else { "0" },
+    );
+    std::env::set_var(
+        "MISTRALRS_OXIDE_DEVICE_PROFILE",
+        if args.oxide_device_profile { "1" } else { "0" },
     );
     let device = Device::new_cuda_with_stream(0)?;
     let stream = device.as_cuda_device()?.cuda_stream();
@@ -268,6 +287,7 @@ fn main() -> Result<()> {
         inputs: &inputs,
         stream: &stream,
         profile_enabled,
+        device_profile_enabled: args.oxide_device_profile,
     };
 
     verify_mode(&context, left_path)?;
@@ -337,12 +357,14 @@ fn main() -> Result<()> {
             same_tensors: args.comparison == ComparisonMode::CheckedTrusted,
             same_logical_inputs: true,
             comparison: args.comparison,
+            oxide_device_profile_enabled: args.oxide_device_profile,
             schedule: schedule.to_vec(),
             warmups_per_block: args.warmups,
             measured_submissions_per_block: args.iterations,
             cache_layout_materialization_timed: false,
             host_timing_definition: "wall time of one adapter enqueue call, excluding drain",
             device_timing_definition: "CUDA events on the common external stream around one complete provider invocation",
+            oxide_internal_device_timing_definition: "ordered CUDA events from external-stream start to provider start, provider end, and external-stream reacquisition",
             percentile_method: "nearest-rank",
         },
         blocks,
@@ -352,6 +374,7 @@ fn main() -> Result<()> {
             "The device window includes Oxide cross-stream event handoff, not only attention kernel execution.",
             "This single-layer synthetic shape does not establish end-to-end model or serving throughput.",
             "Results apply only to the recorded shape, software, hardware, and timing protocol.",
+            "When Oxide internal device profiling is enabled, its extra timing events make the outer Oxide-versus-standard device comparison diagnostic only.",
         ],
     };
     write_json(&args.output, &record)
@@ -362,6 +385,7 @@ fn parse_args() -> Result<Args> {
     let mut warmups = DEFAULT_WARMUPS;
     let mut iterations = DEFAULT_ITERATIONS;
     let mut comparison = ComparisonMode::CheckedTrusted;
+    let mut oxide_device_profile = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let value = args
@@ -378,6 +402,13 @@ fn parse_args() -> Result<Args> {
                     _ => return Err(format!("unknown comparison {value}").into()),
                 }
             }
+            "--oxide-device-profile" => {
+                oxide_device_profile = match value.as_str() {
+                    "0" | "false" => false,
+                    "1" | "true" => true,
+                    _ => return Err(format!("invalid boolean {value}").into()),
+                }
+            }
             _ => return Err(format!("unknown argument {arg}").into()),
         }
     }
@@ -389,6 +420,7 @@ fn parse_args() -> Result<Args> {
         warmups,
         iterations,
         comparison,
+        oxide_device_profile,
     })
 }
 
@@ -576,6 +608,7 @@ fn run_block(
         validation,
         iterations,
         context.profile_enabled,
+        context.device_profile_enabled,
     )?;
     let host_enqueue_distribution = distribution(host_enqueue_microseconds.iter().copied())?;
     let device_window_distribution = distribution(device_window_microseconds.iter().copied())?;
@@ -607,6 +640,7 @@ fn verify_mode(context: &BenchContext<'_>, validation: Validation) -> Result<()>
         validation,
         1,
         context.profile_enabled,
+        context.device_profile_enabled,
     )
 }
 
@@ -681,6 +715,7 @@ fn validate_stats(
     validation: Validation,
     submissions: usize,
     profile_enabled: bool,
+    device_profile_enabled: bool,
 ) -> Result<()> {
     let expected = u64::try_from(submissions)?;
     let after = stats_snapshot(actual);
@@ -688,6 +723,7 @@ fn validate_stats(
         if after.submitted != before.submitted
             || after.completed != before.completed
             || after.failed != before.failed
+            || after.device_profiled_completions != before.device_profiled_completions
         {
             return Err(format!("standard path changed Oxide stats: {actual:?}").into());
         }
@@ -704,6 +740,11 @@ fn validate_stats(
         || actual.external_regions() != 9
         || actual.adapter_device_to_device_copies() != 0
         || actual.profile_enabled() != profile_enabled
+        || actual.device_profile_enabled() != device_profile_enabled
+        || after
+            .device_profiled_completions
+            .checked_sub(before.device_profiled_completions)
+            != Some(if device_profile_enabled { expected } else { 0 })
     {
         return Err(format!("adapter stats mismatch for {validation:?}: {actual:?}").into());
     }
@@ -715,12 +756,17 @@ fn stats_snapshot(stats: OxidePagedDecodeStats) -> StatsSnapshot {
         submitted: stats.submitted(),
         completed: stats.completed(),
         failed: stats.failed(),
+        device_profiled_completions: stats.device_profiled_completions(),
         enqueue_host_nanoseconds: stats.enqueue_host_nanoseconds(),
         interop_host_nanoseconds: stats.interop_host_nanoseconds(),
         engine_provider_metadata_host_nanoseconds: stats
             .engine_provider_metadata_host_nanoseconds(),
         engine_status_readback_host_nanoseconds: stats.engine_status_readback_host_nanoseconds(),
         drain_host_nanoseconds: stats.drain_host_nanoseconds(),
+        engine_total_device_nanoseconds: stats.engine_total_device_nanoseconds(),
+        engine_pre_handoff_device_nanoseconds: stats.engine_pre_handoff_device_nanoseconds(),
+        engine_provider_device_nanoseconds: stats.engine_provider_device_nanoseconds(),
+        engine_post_handoff_device_nanoseconds: stats.engine_post_handoff_device_nanoseconds(),
     }
 }
 
@@ -738,6 +784,13 @@ fn stats_delta(
         completed: checked_delta(after.completed, before.completed, "completed")?,
         failed: checked_delta(after.failed, before.failed, "failed")?,
         profile_enabled,
+        device_profile_enabled: after.device_profiled_completions
+            > before.device_profiled_completions,
+        device_profiled_completions: checked_delta(
+            after.device_profiled_completions,
+            before.device_profiled_completions,
+            "device profiled completions",
+        )?,
         enqueue_host_microseconds_per_submission: per_submission_microseconds(
             checked_delta(
                 after.enqueue_host_nanoseconds,
@@ -775,6 +828,38 @@ fn stats_delta(
                 after.drain_host_nanoseconds,
                 before.drain_host_nanoseconds,
                 "drain host nanoseconds",
+            )?,
+            submitted,
+        ),
+        engine_total_device_microseconds_per_submission: per_submission_microseconds(
+            checked_delta(
+                after.engine_total_device_nanoseconds,
+                before.engine_total_device_nanoseconds,
+                "total device nanoseconds",
+            )?,
+            submitted,
+        ),
+        engine_pre_handoff_device_microseconds_per_submission: per_submission_microseconds(
+            checked_delta(
+                after.engine_pre_handoff_device_nanoseconds,
+                before.engine_pre_handoff_device_nanoseconds,
+                "pre-handoff device nanoseconds",
+            )?,
+            submitted,
+        ),
+        engine_provider_device_microseconds_per_submission: per_submission_microseconds(
+            checked_delta(
+                after.engine_provider_device_nanoseconds,
+                before.engine_provider_device_nanoseconds,
+                "provider device nanoseconds",
+            )?,
+            submitted,
+        ),
+        engine_post_handoff_device_microseconds_per_submission: per_submission_microseconds(
+            checked_delta(
+                after.engine_post_handoff_device_nanoseconds,
+                before.engine_post_handoff_device_nanoseconds,
+                "post-handoff device nanoseconds",
             )?,
             submitted,
         ),
