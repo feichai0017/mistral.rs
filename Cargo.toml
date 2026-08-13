@@ -192,8 +192,8 @@ cuda-core = "=0.1.0"
 cuda-async = "=0.1.0"
 cuda-bindings = "=0.1.0"
 oxide-cuda-core = { package = "cuda-core", git = "https://github.com/NVlabs/cuda-oxide.git", rev = "868f8ec4ef900bae7e67e7f9508b2da66eee5472" }
-oxide-infer = { git = "https://github.com/feichai0017/oxide-infer.git", rev = "d3f7e4e324f52e25994e68c2ed3361aa4058eba5" }
-oxide-infer-cuda = { git = "https://github.com/feichai0017/oxide-infer.git", rev = "d3f7e4e324f52e25994e68c2ed3361aa4058eba5", default-features = false }
+oxide-infer = { git = "https://github.com/feichai0017/oxide-infer.git", rev = "39058b6da0a1b60495844ad6c7a9970f56e78114" }
+oxide-infer-cuda = { git = "https://github.com/feichai0017/oxide-infer.git", rev = "39058b6da0a1b60495844ad6c7a9970f56e78114", default-features = false }
 
 mistralrs-core = { path = "mistralrs-core", version = "0.9.0" }
 mistralrs-paged-attn = { path = "mistralrs-paged-attn", version = "0.9.0" }

@@ -29,8 +29,10 @@ const COMMAND_CAPACITY: usize = 3;
 const MAX_IN_FLIGHT: usize = 128;
 const BINDING_COUNT: usize = 9;
 const OXIDE_PROFILE_ENV: &str = "MISTRALRS_OXIDE_PROFILE";
+const OXIDE_DEVICE_PROFILE_ENV: &str = "MISTRALRS_OXIDE_DEVICE_PROFILE";
 
 static OXIDE_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
+static OXIDE_DEVICE_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct RuntimeKey {
@@ -126,8 +128,12 @@ impl OxideRuntime {
         .map_err(|error| oxide_external_error("failed to import the Candle stream", error))?;
         let provider = DecodeProvider::load(&context)
             .map_err(|error| oxide_external_error("failed to load Oxide decode kernels", error))?;
-        let mut queue = EngineInteropQueue::new(external, COMMAND_CAPACITY, MAX_IN_FLIGHT)
-            .map_err(|error| oxide_external_error("failed to create the Oxide queue", error))?;
+        let mut queue = if oxide_device_profile_enabled() {
+            EngineInteropQueue::new_device_profiled(external, COMMAND_CAPACITY, MAX_IN_FLIGHT)
+        } else {
+            EngineInteropQueue::new(external, COMMAND_CAPACITY, MAX_IN_FLIGHT)
+        }
+        .map_err(|error| oxide_external_error("failed to create the Oxide queue", error))?;
         queue.set_host_profiling_enabled(oxide_profile_enabled());
         Ok(Self {
             key,
@@ -400,6 +406,12 @@ pub struct OxidePagedDecodeStats {
     engine_provider_attention_host_nanoseconds: u64,
     engine_status_readback_host_nanoseconds: u64,
     engine_post_handoff_host_nanoseconds: u64,
+    device_profile_enabled: bool,
+    device_profiled_completions: u64,
+    engine_total_device_nanoseconds: u64,
+    engine_pre_handoff_device_nanoseconds: u64,
+    engine_provider_device_nanoseconds: u64,
+    engine_post_handoff_device_nanoseconds: u64,
     drain_host_nanoseconds: u64,
     drain_calls: u64,
 }
@@ -517,6 +529,30 @@ impl OxidePagedDecodeStats {
         self.engine_post_handoff_host_nanoseconds
     }
 
+    pub const fn device_profile_enabled(self) -> bool {
+        self.device_profile_enabled
+    }
+
+    pub const fn device_profiled_completions(self) -> u64 {
+        self.device_profiled_completions
+    }
+
+    pub const fn engine_total_device_nanoseconds(self) -> u64 {
+        self.engine_total_device_nanoseconds
+    }
+
+    pub const fn engine_pre_handoff_device_nanoseconds(self) -> u64 {
+        self.engine_pre_handoff_device_nanoseconds
+    }
+
+    pub const fn engine_provider_device_nanoseconds(self) -> u64 {
+        self.engine_provider_device_nanoseconds
+    }
+
+    pub const fn engine_post_handoff_device_nanoseconds(self) -> u64 {
+        self.engine_post_handoff_device_nanoseconds
+    }
+
     pub const fn drain_host_nanoseconds(self) -> u64 {
         self.drain_host_nanoseconds
     }
@@ -536,10 +572,26 @@ impl OxidePagedDecodeStats {
         self.adapter_device_to_device_copies = trace.adapter_device_to_device_copies();
     }
 
-    fn record_completion(&mut self, failed: bool) {
+    fn record_completion(&mut self, trace: Option<&EngineExecutionTrace>, failed: bool) {
         self.completed = self.completed.saturating_add(1);
         if failed {
             self.failed = self.failed.saturating_add(1);
+        }
+        if let Some(profile) = trace.and_then(EngineExecutionTrace::device_profile) {
+            self.device_profile_enabled = true;
+            self.device_profiled_completions = self.device_profiled_completions.saturating_add(1);
+            self.engine_total_device_nanoseconds = self
+                .engine_total_device_nanoseconds
+                .saturating_add(profile.total_device_nanoseconds());
+            self.engine_pre_handoff_device_nanoseconds = self
+                .engine_pre_handoff_device_nanoseconds
+                .saturating_add(profile.pre_handoff_device_nanoseconds());
+            self.engine_provider_device_nanoseconds = self
+                .engine_provider_device_nanoseconds
+                .saturating_add(profile.provider_device_nanoseconds());
+            self.engine_post_handoff_device_nanoseconds = self
+                .engine_post_handoff_device_nanoseconds
+                .saturating_add(profile.post_handoff_device_nanoseconds());
         }
     }
 
@@ -1180,7 +1232,7 @@ impl OxidePagedDecodeRuntime {
             drained += 1;
             self.lock_state_for_drain(drained)?
                 .stats
-                .record_completion(result.is_err());
+                .record_completion(result.as_ref().ok(), result.is_err());
             if let Err(source) = result {
                 if first_error.is_none() {
                     first_error = Some((drained, source));
@@ -1322,6 +1374,11 @@ fn oxide_external_error(context: &str, error: impl std::fmt::Display) -> Error {
 
 fn oxide_profile_enabled() -> bool {
     *OXIDE_PROFILE_ENABLED.get_or_init(|| std::env::var(OXIDE_PROFILE_ENV).as_deref() == Ok("1"))
+}
+
+fn oxide_device_profile_enabled() -> bool {
+    *OXIDE_DEVICE_PROFILE_ENABLED
+        .get_or_init(|| std::env::var(OXIDE_DEVICE_PROFILE_ENV).as_deref() == Ok("1"))
 }
 
 fn duration_nanoseconds(duration: Duration) -> u64 {
