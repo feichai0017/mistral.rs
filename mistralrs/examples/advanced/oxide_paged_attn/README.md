@@ -193,6 +193,38 @@ This is a fixed-concurrency wave comparison, not a saturation or production
 capacity claim. FlashInfer remains excluded for these model shapes because GQA
 group sizes 6 and 7 are outside the decode dispatch supported by this adapter.
 
+### Concurrency-16 host-overhead diagnosis
+
+The 2026-08-13 diagnostic run used clean commit `f51603235`, Oxide Infer
+`c113d2c0`, Qwen2.5-1.5B-Instruct, BF16, concurrency 16, and optional host
+profiling. Three fresh Oxide processes completed 26,460 measured layer-decode
+submissions with zero failure and zero adapter-issued device-to-device copy.
+The values below are per-operator means pooled from the three Oxide blocks.
+
+| Host enqueue stage | Mean per operator | Share of 24.435 us total |
+| --- | ---: | ---: |
+| Output and scratch allocation | 4.110 us | 16.8% |
+| Candle storage guards | 1.393 us | 5.7% |
+| External-region binding | 1.160 us | 4.7% |
+| Engine interop, including provider | 13.375 us | 54.7% |
+
+The engine-interoperability total splits into 0.655 us for the pre-event
+handoff, 9.492 us for provider submission, 2.103 us for device-status readback,
+and 0.585 us for the post-event handoff. Inside provider submission, argument
+preflight took 0.172 us, the metadata-validation launch took 4.240 us, and the
+attention launch took 4.830 us. Repeated metadata validation plus status
+readback therefore accounts for 6.343 us per layer, or 26.0% of the complete
+host enqueue path. Both event handoffs together account for 1.240 us, or 5.1%.
+
+This evidence rejects cross-stream handoff as the first optimization target.
+The next target is an explicit trusted-metadata capability issued where
+Mistral.rs constructs and validates the CPU page table. The ordinary checked
+Oxide path and its typed recovery test must remain available. The diagnostic
+suite used only five measured waves per block with profiling enabled, so its
+throughput observations are not a replacement for the serving matrix above.
+See the [compressed raw record](./h20-r7-provider-profile-qwen2.5-1.5b-c16-f516032-20260813.json.gz)
+for every request, wave, counter, timing accumulator, and excluded claim.
+
 ## Historical H20 results
 
 The archived 2026-08-11 run predates the project rename. It used an NVIDIA H20,
