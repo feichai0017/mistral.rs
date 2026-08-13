@@ -10,17 +10,20 @@ use std::cmp::Ordering;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::Barrier;
+use tokio::task::JoinSet;
 
-const SCHEMA: &str = "mistralrs.oxide-paged-decode-steady-state.v1";
+const SCHEMA: &str = "mistralrs.oxide-paged-decode-serving.v2";
 const PROMPT: &str =
     "Output the integers from 1 through 200 in ascending order, separated by one space. Output only the integers.";
 const DEFAULT_WARMUPS: usize = 5;
 const DEFAULT_ITERATIONS: usize = 20;
 const DEFAULT_MAX_OUTPUT_TOKENS: usize = 64;
+const DEFAULT_CONCURRENCY: usize = 1;
 const PAGE_SIZE: usize = 16;
 const CONTEXT_SIZE: usize = 4096;
-const MAX_NUM_SEQUENCES: usize = 1;
 const GPU_QUERY_FIELDS: &str = "name,compute_cap,memory.total,driver_version";
 const BYTES_PER_MIB: f64 = 1_048_576.0;
 const DEFAULT_SCHEDULE: [Provider; 6] = [
@@ -59,6 +62,8 @@ struct SuiteArgs {
     iterations: usize,
     #[arg(long, default_value_t = DEFAULT_MAX_OUTPUT_TOKENS)]
     max_output_tokens: usize,
+    #[arg(long, default_value_t = DEFAULT_CONCURRENCY)]
+    concurrency: usize,
 }
 
 #[derive(Debug, Args)]
@@ -79,6 +84,8 @@ struct WorkerArgs {
     iterations: usize,
     #[arg(long)]
     max_output_tokens: usize,
+    #[arg(long)]
+    concurrency: usize,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize, ValueEnum)]
@@ -99,7 +106,8 @@ impl Provider {
 
 #[derive(Debug, Deserialize, Serialize)]
 struct Measurement {
-    iteration: usize,
+    wave_index: usize,
+    request_index: usize,
     prompt_tokens: usize,
     completion_tokens: usize,
     ttft_ms: f64,
@@ -109,6 +117,17 @@ struct Measurement {
     completion_tokens_per_second: f64,
     engine_prompt_ms: f64,
     engine_completion_ms: f64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct WaveMeasurement {
+    wave_index: usize,
+    request_count: usize,
+    prompt_tokens: usize,
+    completion_tokens: usize,
+    wall_ms: f64,
+    requests_per_second: f64,
+    output_tokens_per_second: f64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -135,8 +154,9 @@ struct WorkerRecord {
     provider: Provider,
     block_index: usize,
     model_name: String,
-    warmups: usize,
-    iterations: usize,
+    warmup_waves: usize,
+    measured_waves: usize,
+    concurrency: usize,
     max_output_tokens: usize,
     response_text: String,
     device_used_memory_baseline_mib: f64,
@@ -144,6 +164,7 @@ struct WorkerRecord {
     device_memory_delta_after_measurements_mib: f64,
     oxide_stats_delta: Option<OxideStatsDelta>,
     measurements: Vec<Measurement>,
+    waves: Vec<WaveMeasurement>,
 }
 
 #[derive(Debug, Serialize)]
@@ -161,16 +182,20 @@ struct Distribution {
 struct ProviderSummary {
     provider: Provider,
     block_count: usize,
-    sample_count: usize,
+    request_sample_count: usize,
+    wave_sample_count: usize,
     ttft_ms: Distribution,
     tpot_ms: Distribution,
     end_to_end_ms: Distribution,
     decode_tokens_per_second: Distribution,
     completion_tokens_per_second: Distribution,
+    aggregate_requests_per_second: Distribution,
+    aggregate_output_tokens_per_second: Distribution,
     device_memory_delta_after_warmup_mib: Distribution,
     device_memory_delta_after_measurements_mib: Distribution,
     block_tpot_p50_ms: Vec<f64>,
     block_decode_tokens_per_second_p50: Vec<f64>,
+    block_aggregate_output_tokens_per_second_p50: Vec<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -180,6 +205,8 @@ struct Comparison {
     oxide_over_baseline_tpot_p50: f64,
     oxide_over_baseline_end_to_end_p50: f64,
     oxide_over_baseline_decode_tps_p50: f64,
+    oxide_over_baseline_aggregate_request_rate_p50: f64,
+    oxide_over_baseline_aggregate_output_tps_p50: f64,
     oxide_minus_baseline_device_memory_delta_after_warmup_mib: f64,
 }
 
@@ -195,8 +222,9 @@ struct Hardware {
 struct Protocol {
     schedule: Vec<Provider>,
     process_isolation_per_block: bool,
-    warmups_per_block: usize,
-    measured_requests_per_block: usize,
+    warmup_waves_per_block: usize,
+    measured_waves_per_block: usize,
+    requests_per_wave: usize,
     max_output_tokens: usize,
     temperature: f64,
     streaming: bool,
@@ -209,6 +237,7 @@ struct Protocol {
     ttft_definition: &'static str,
     tpot_definition: &'static str,
     memory_definition: &'static str,
+    aggregate_throughput_definition: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -246,7 +275,12 @@ async fn main() -> Result<()> {
 }
 
 fn run_suite(args: SuiteArgs) -> Result<()> {
-    validate_counts(args.warmups, args.iterations, args.max_output_tokens)?;
+    validate_counts(
+        args.warmups,
+        args.iterations,
+        args.max_output_tokens,
+        args.concurrency,
+    )?;
     let current_exe = std::env::current_exe().context("failed to locate benchmark binary")?;
     let temp_dir =
         std::env::temp_dir().join(format!("mistralrs-oxide-bench-{}", std::process::id()));
@@ -289,6 +323,8 @@ fn collect_suite(args: &SuiteArgs, current_exe: &Path, temp_dir: &Path) -> Resul
             .arg(args.iterations.to_string())
             .arg("--max-output-tokens")
             .arg(args.max_output_tokens.to_string())
+            .arg("--concurrency")
+            .arg(args.concurrency.to_string())
             .stdin(Stdio::null())
             .status()
             .with_context(|| format!("failed to start {provider:?} block {block_index}"))?;
@@ -332,6 +368,14 @@ fn collect_suite(args: &SuiteArgs, current_exe: &Path, temp_dir: &Path) -> Resul
             oxide.decode_tokens_per_second.p50,
             baseline.decode_tokens_per_second.p50,
         )?,
+        oxide_over_baseline_aggregate_request_rate_p50: ratio(
+            oxide.aggregate_requests_per_second.p50,
+            baseline.aggregate_requests_per_second.p50,
+        )?,
+        oxide_over_baseline_aggregate_output_tps_p50: ratio(
+            oxide.aggregate_output_tokens_per_second.p50,
+            baseline.aggregate_output_tokens_per_second.p50,
+        )?,
         oxide_minus_baseline_device_memory_delta_after_warmup_mib: oxide
             .device_memory_delta_after_warmup_mib
             .p50
@@ -352,27 +396,29 @@ fn collect_suite(args: &SuiteArgs, current_exe: &Path, temp_dir: &Path) -> Resul
         protocol: Protocol {
             schedule: DEFAULT_SCHEDULE.to_vec(),
             process_isolation_per_block: true,
-            warmups_per_block: args.warmups,
-            measured_requests_per_block: args.iterations,
+            warmup_waves_per_block: args.warmups,
+            measured_waves_per_block: args.iterations,
+            requests_per_wave: args.concurrency,
             max_output_tokens: args.max_output_tokens,
             temperature: 0.0,
             streaming: true,
             prefix_cache_enabled: false,
             cuda_graph_enabled: false,
-            max_num_sequences: MAX_NUM_SEQUENCES,
+            max_num_sequences: args.concurrency,
             page_size: PAGE_SIZE,
             context_size: CONTEXT_SIZE,
             percentile_method: "nearest-rank",
             ttft_definition: "request submission to first non-empty generated content",
             tpot_definition: "(stream completion - TTFT) / (completion tokens - 1)",
             memory_definition: "CUDA driver device-used memory delta from the post-context baseline, sampled after warmup and after measured requests",
+            aggregate_throughput_definition: "sum of completion tokens, or request count, divided by coordinated wave release through final completion wall time",
         },
         blocks,
         providers: vec![oxide, baseline],
         comparison,
         excluded_claims: [
             "Results apply only to the recorded model, request shape, software, and hardware.",
-            "Single-request measurements do not establish concurrent serving throughput.",
+            "A fixed-concurrency wave does not establish saturation throughput or production capacity.",
             "Device memory deltas are steady-state observations, not process-private, allocator, or system-wide peaks.",
             "The benchmark does not qualify CUDA Graphs, prefix caching, speculative decode, tensor parallelism, multiple GPUs, or multiple streams.",
         ],
@@ -380,7 +426,12 @@ fn collect_suite(args: &SuiteArgs, current_exe: &Path, temp_dir: &Path) -> Resul
 }
 
 async fn run_worker(args: WorkerArgs) -> Result<()> {
-    validate_counts(args.warmups, args.iterations, args.max_output_tokens)?;
+    validate_counts(
+        args.warmups,
+        args.iterations,
+        args.max_output_tokens,
+        args.concurrency,
+    )?;
     configure_provider(args.provider);
     let device = Device::new_cuda_with_stream(0)?;
     let device_used_memory_baseline_mib = query_device_used_memory_mib(&device)?;
@@ -389,47 +440,63 @@ async fn run_worker(args: WorkerArgs) -> Result<()> {
         .model_path
         .to_str()
         .context("model path is not valid UTF-8")?;
-    let model = TextModelBuilder::new(model_path)
-        .with_dtype(ModelDType::BF16)
-        .with_device(device)
-        .with_device_mapping(DeviceMapSetting::dummy())
-        .with_max_num_seqs(MAX_NUM_SEQUENCES)
-        .with_prefix_cache_n(None)
-        .with_paged_attn(
-            PagedAttentionMetaBuilder::default()
-                .with_block_size(PAGE_SIZE)
-                .with_gpu_memory(MemoryGpuConfig::ContextSize(CONTEXT_SIZE))
-                .build()?,
-        )
-        .build()
-        .await?;
+    let model = Arc::new(
+        TextModelBuilder::new(model_path)
+            .with_dtype(ModelDType::BF16)
+            .with_device(device)
+            .with_device_mapping(DeviceMapSetting::dummy())
+            .with_max_num_seqs(args.concurrency)
+            .with_prefix_cache_n(None)
+            .with_paged_attn(
+                PagedAttentionMetaBuilder::default()
+                    .with_block_size(PAGE_SIZE)
+                    .with_gpu_memory(MemoryGpuConfig::ContextSize(CONTEXT_SIZE))
+                    .build()?,
+            )
+            .build()
+            .await?,
+    );
 
     let mut response_text = None;
     for _ in 0..args.warmups {
-        let observation = measure_request(&model, args.max_output_tokens).await?;
-        verify_response(&mut response_text, &observation.response_text)?;
+        let (observations, _) =
+            measure_wave(&model, args.concurrency, args.max_output_tokens).await?;
+        for observation in observations {
+            verify_response(&mut response_text, &observation.response_text)?;
+        }
     }
     let device_used_memory_after_warmup_mib = query_device_used_memory_mib(&memory_device)?;
     let device_memory_delta_after_warmup_mib = memory_delta_mib(
         device_used_memory_after_warmup_mib,
         device_used_memory_baseline_mib,
     )?;
-    let stats_before = oxide_stats_snapshot(&model, args.provider).await?;
+    let stats_before = oxide_stats_snapshot(model.as_ref(), args.provider).await?;
 
-    let mut measurements = Vec::with_capacity(args.iterations);
-    for iteration in 0..args.iterations {
-        let observation = measure_request(&model, args.max_output_tokens).await?;
-        verify_response(&mut response_text, &observation.response_text)?;
-        measurements.push(observation.into_measurement(iteration));
+    let request_capacity = args
+        .iterations
+        .checked_mul(args.concurrency)
+        .context("request sample count overflow")?;
+    let mut measurements = Vec::with_capacity(request_capacity);
+    let mut waves = Vec::with_capacity(args.iterations);
+    for wave_index in 0..args.iterations {
+        let (observations, wall) =
+            measure_wave(&model, args.concurrency, args.max_output_tokens).await?;
+        for observation in &observations {
+            verify_response(&mut response_text, &observation.response_text)?;
+        }
+        waves.push(WaveMeasurement::new(wave_index, &observations, wall)?);
+        measurements.extend(observations.into_iter().enumerate().map(
+            |(request_index, observation)| observation.into_measurement(wave_index, request_index),
+        ));
     }
-    let stats_after = oxide_stats_snapshot(&model, args.provider).await?;
+    let stats_after = oxide_stats_snapshot(model.as_ref(), args.provider).await?;
     let device_used_memory_after_measurements_mib = query_device_used_memory_mib(&memory_device)?;
     let device_memory_delta_after_measurements_mib = memory_delta_mib(
         device_used_memory_after_measurements_mib,
         device_used_memory_baseline_mib,
     )?;
     let oxide_stats_delta =
-        oxide_stats_delta(&model, args.provider, stats_before, stats_after).await?;
+        oxide_stats_delta(model.as_ref(), args.provider, stats_before, stats_after).await?;
 
     write_json(
         &args.output,
@@ -437,8 +504,9 @@ async fn run_worker(args: WorkerArgs) -> Result<()> {
             provider: args.provider,
             block_index: args.block_index,
             model_name: args.model_name,
-            warmups: args.warmups,
-            iterations: args.iterations,
+            warmup_waves: args.warmups,
+            measured_waves: args.iterations,
+            concurrency: args.concurrency,
             max_output_tokens: args.max_output_tokens,
             response_text: response_text.context("worker produced no response")?,
             device_used_memory_baseline_mib,
@@ -446,6 +514,7 @@ async fn run_worker(args: WorkerArgs) -> Result<()> {
             device_memory_delta_after_measurements_mib,
             oxide_stats_delta,
             measurements,
+            waves,
         },
     )
 }
@@ -458,13 +527,14 @@ struct Observation {
 }
 
 impl Observation {
-    fn into_measurement(self, iteration: usize) -> Measurement {
+    fn into_measurement(self, wave_index: usize, request_index: usize) -> Measurement {
         let ttft_seconds = self.ttft.as_secs_f64();
         let end_to_end_seconds = self.end_to_end.as_secs_f64();
         let decode_seconds = end_to_end_seconds - ttft_seconds;
         let decode_tokens = self.usage.completion_tokens - 1;
         Measurement {
-            iteration,
+            wave_index,
+            request_index,
             prompt_tokens: self.usage.prompt_tokens,
             completion_tokens: self.usage.completion_tokens,
             ttft_ms: ttft_seconds * 1000.0,
@@ -476,6 +546,70 @@ impl Observation {
             engine_completion_ms: f64::from(self.usage.total_completion_time_sec) * 1000.0,
         }
     }
+}
+
+impl WaveMeasurement {
+    fn new(wave_index: usize, observations: &[Observation], wall: Duration) -> Result<Self> {
+        if observations.is_empty() || wall.is_zero() {
+            bail!("wave requires requests and a positive wall time");
+        }
+        let prompt_tokens = observations
+            .iter()
+            .map(|observation| observation.usage.prompt_tokens)
+            .sum();
+        let completion_tokens = observations
+            .iter()
+            .map(|observation| observation.usage.completion_tokens)
+            .sum();
+        let wall_seconds = wall.as_secs_f64();
+        Ok(Self {
+            wave_index,
+            request_count: observations.len(),
+            prompt_tokens,
+            completion_tokens,
+            wall_ms: wall_seconds * 1000.0,
+            requests_per_second: observations.len() as f64 / wall_seconds,
+            output_tokens_per_second: completion_tokens as f64 / wall_seconds,
+        })
+    }
+}
+
+async fn measure_wave(
+    model: &Arc<Model>,
+    concurrency: usize,
+    max_output_tokens: usize,
+) -> Result<(Vec<Observation>, Duration)> {
+    let ready = Arc::new(Barrier::new(concurrency + 1));
+    let release = Arc::new(Barrier::new(concurrency + 1));
+    let mut requests = JoinSet::new();
+    for request_index in 0..concurrency {
+        let model = Arc::clone(model);
+        let ready = Arc::clone(&ready);
+        let release = Arc::clone(&release);
+        requests.spawn(async move {
+            ready.wait().await;
+            release.wait().await;
+            let observation = measure_request(model.as_ref(), max_output_tokens).await?;
+            Ok::<_, anyhow::Error>((request_index, observation))
+        });
+    }
+
+    ready.wait().await;
+    let wave_start = Instant::now();
+    release.wait().await;
+    let mut observations = Vec::with_capacity(concurrency);
+    while let Some(request) = requests.join_next().await {
+        observations.push(request.context("concurrent request task failed")??);
+    }
+    let wall = wave_start.elapsed();
+    observations.sort_by_key(|(request_index, _)| *request_index);
+    Ok((
+        observations
+            .into_iter()
+            .map(|(_, observation)| observation)
+            .collect(),
+        wall,
+    ))
 }
 
 async fn measure_request(model: &Model, max_output_tokens: usize) -> Result<Observation> {
@@ -661,6 +795,10 @@ fn summarize_provider(provider: Provider, blocks: &[WorkerRecord]) -> Result<Pro
         .iter()
         .flat_map(|block| block.measurements.iter())
         .collect::<Vec<_>>();
+    let waves = selected
+        .iter()
+        .flat_map(|block| block.waves.iter())
+        .collect::<Vec<_>>();
     let block_tpot_p50_ms = selected
         .iter()
         .map(|block| {
@@ -679,10 +817,18 @@ fn summarize_provider(provider: Provider, blocks: &[WorkerRecord]) -> Result<Pro
             .map(|x| x.p50)
         })
         .collect::<Result<Vec<_>>>()?;
+    let block_aggregate_output_tokens_per_second_p50 = selected
+        .iter()
+        .map(|block| {
+            distribution(block.waves.iter().map(|wave| wave.output_tokens_per_second))
+                .map(|distribution| distribution.p50)
+        })
+        .collect::<Result<Vec<_>>>()?;
     Ok(ProviderSummary {
         provider,
         block_count: selected.len(),
-        sample_count: measurements.len(),
+        request_sample_count: measurements.len(),
+        wave_sample_count: waves.len(),
         ttft_ms: distribution(measurements.iter().map(|item| item.ttft_ms))?,
         tpot_ms: distribution(measurements.iter().map(|item| item.tpot_ms))?,
         end_to_end_ms: distribution(measurements.iter().map(|item| item.end_to_end_ms))?,
@@ -696,6 +842,12 @@ fn summarize_provider(provider: Provider, blocks: &[WorkerRecord]) -> Result<Pro
                 .iter()
                 .map(|item| item.completion_tokens_per_second),
         )?,
+        aggregate_requests_per_second: distribution(
+            waves.iter().map(|wave| wave.requests_per_second),
+        )?,
+        aggregate_output_tokens_per_second: distribution(
+            waves.iter().map(|wave| wave.output_tokens_per_second),
+        )?,
         device_memory_delta_after_warmup_mib: distribution(
             selected
                 .iter()
@@ -708,6 +860,7 @@ fn summarize_provider(provider: Provider, blocks: &[WorkerRecord]) -> Result<Pro
         )?,
         block_tpot_p50_ms,
         block_decode_tokens_per_second_p50,
+        block_aggregate_output_tokens_per_second_p50,
     })
 }
 
@@ -753,9 +906,16 @@ fn ratio(numerator: f64, denominator: f64) -> Result<f64> {
     Ok(numerator / denominator)
 }
 
-fn validate_counts(warmups: usize, iterations: usize, max_output_tokens: usize) -> Result<()> {
-    if warmups == 0 || iterations == 0 || max_output_tokens < 2 {
-        bail!("warmups and iterations must be positive, and max output tokens must be at least 2");
+fn validate_counts(
+    warmups: usize,
+    iterations: usize,
+    max_output_tokens: usize,
+    concurrency: usize,
+) -> Result<()> {
+    if warmups == 0 || iterations == 0 || max_output_tokens < 2 || concurrency == 0 {
+        bail!(
+            "warmups, iterations, and concurrency must be positive, and max output tokens must be at least 2"
+        );
     }
     Ok(())
 }

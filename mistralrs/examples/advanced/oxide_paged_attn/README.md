@@ -81,7 +81,7 @@ outcomes, and excluded claims. The recorded request timings are observations,
 not a performance comparison: the runs did not use a repeated, counterbalanced
 benchmark protocol and CUDA driver JIT caching differed between runs.
 
-## Steady-state benchmark
+## Serving benchmark
 
 Build the benchmark once through cuda-oxide, then run its six-block suite:
 
@@ -92,18 +92,25 @@ cargo +nightly-2026-04-03 oxide build --arch sm_90 -- \
 MISTRALRS_OXIDE_PROFILE=1 target/release/oxide_paged_attn_bench suite \
   --model-path /path/to/qwen2.5-1.5b-instruct \
   --model-name Qwen2.5-1.5B-Instruct \
-  --output /path/to/result.json
+  --output /path/to/result.json \
+  --concurrency 4
 ```
 
 The suite uses an Oxide, baseline, baseline, Oxide, Oxide, baseline schedule.
 Each block runs in a fresh process, loads one model, disables prefix caching and
-CUDA Graphs, performs five unmeasured warmups, and then measures 20 streaming
-requests. The reported TTFT starts before request submission and ends at the
-first non-empty generated content. TPOT covers the remaining completion tokens.
-The suite also records end-to-end latency, decode throughput, CUDA driver
-device-used memory deltas from the post-context baseline, per-block medians,
-provider counters, and pooled nearest-rank P50/P95 values. The memory delta is a
-device-wide steady-state observation, not a process-private or allocator peak.
+CUDA Graphs, performs five unmeasured waves, and then measures 20 streaming
+waves. A barrier releases the requested number of requests together, and the
+model scheduler admits up to the same number of sequences. Concurrency defaults
+to one when the flag is omitted.
+
+The reported TTFT starts before each request submission and ends at its first
+non-empty generated content. TPOT covers the remaining completion tokens. Each
+wave additionally reports aggregate output tokens per second and requests per
+second from coordinated release through the final request completion. The suite
+also records end-to-end latency, CUDA driver device-used memory deltas from the
+post-context baseline, per-block medians, provider counters, and pooled
+nearest-rank P50/P95 values. The memory delta is a device-wide steady-state
+observation, not a process-private or allocator peak.
 
 The fixed prompt is expected to reach the 64-token cap. The suite fails closed
 if a request ends early, output changes within or across provider blocks, an
@@ -112,10 +119,10 @@ Oxide command fails, or the adapter issues a device-to-device copy.
 ### Current steady-state evidence
 
 The 2026-08-13 binding-reuse run used commit `d7c86540`, Oxide Infer `840b0658`,
-BF16, one stream, and one recorded NVIDIA H20. Each row pools 60 measured requests per
-provider across three fresh-process blocks. Both model directories matched the
-file hashes in the current-source requalification record above. Lower TTFT and
-TPOT are better; higher decode throughput is better.
+BF16, one stream, one request per wave, and one recorded NVIDIA H20. Each row
+pools 60 measured requests per provider across three fresh-process blocks. Both
+model directories matched the file hashes in the current-source requalification
+record above. Lower TTFT and TPOT are better; higher decode throughput is better.
 
 | Model | TTFT P50, Oxide / standard | TPOT P50, Oxide / standard | Decode P50, Oxide / standard | Oxide / standard decode |
 | --- | ---: | ---: | ---: | ---: |
@@ -137,6 +144,54 @@ so the matched baseline is standard Mistral.rs paged attention. See the full
 [1.5B record](./h20-binding-reuse-qwen2.5-1.5b-840b065-20260813.json) and
 [7B record](./h20-binding-reuse-qwen2.5-7b-840b065-20260813.json) for raw
 samples, P95 values, counters, protocol metadata, and excluded claims.
+
+### Current concurrent serving evidence
+
+The 2026-08-13 serving matrix used commit `ac2979e2`, Oxide Infer `840b0658`,
+BF16, one stream, and one recorded NVIDIA H20. Each row pools 60 measured waves
+per provider across three fresh-process blocks. The request sample count is 60
+times the concurrency. Aggregate output throughput is the sum of completion
+tokens divided by wall time from coordinated wave release through the last
+completion.
+
+| Model | Concurrency | Aggregate output P50, Oxide / standard | Oxide / standard | TTFT P95, Oxide / standard | End-to-end P95, Oxide / standard |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Qwen2.5-1.5B-Instruct | 1 | 189.44 / 204.32 tok/s | 0.927x | 12.76 / 9.53 ms | 340.64 / 314.30 ms |
+| Qwen2.5-1.5B-Instruct | 4 | 514.23 / 544.85 tok/s | 0.944x | 28.23 / 17.14 ms | 513.37 / 470.95 ms |
+| Qwen2.5-1.5B-Instruct | 8 | 728.35 / 763.44 tok/s | 0.954x | 28.57 / 28.60 ms | 707.25 / 673.19 ms |
+| Qwen2.5-1.5B-Instruct | 16 | 2,090.68 / 3,043.22 tok/s | 0.687x | 45.43 / 47.04 ms | 494.73 / 409.89 ms |
+| Qwen2.5-7B-Instruct | 1 | 101.24 / 104.74 tok/s | 0.967x | 23.54 / 14.82 ms | 646.27 / 611.77 ms |
+| Qwen2.5-7B-Instruct | 4 | 219.55 / 225.35 tok/s | 0.974x | 41.18 / 38.68 ms | 1,169.82 / 1,137.13 ms |
+| Qwen2.5-7B-Instruct | 8 | 254.21 / 257.59 tok/s | 0.987x | 71.13 / 69.63 ms | 2,016.94 / 1,988.84 ms |
+| Qwen2.5-7B-Instruct | 16 | 1,490.61 / 1,595.24 tok/s | 0.934x | 131.23 / 128.61 ms | 694.86 / 643.30 ms |
+
+Oxide aggregate output throughput scaled from concurrency 1 to 16 by 11.0x for
+1.5B and 14.7x for 7B. It remained within 7.3% of standard through concurrency
+8 for 1.5B and within 6.6% at every measured concurrency for 7B. The 1.5B
+concurrency-16 result exposes a specific optimization gap: Oxide was 31.3%
+below standard despite continuing to scale in absolute throughput.
+
+Across both models and all four concurrency levels, all 846,720 measured Oxide
+layer-decode submissions completed with zero provider failure and zero
+adapter-issued device-to-device copy. Every request reached 64 completion tokens,
+and both providers returned the same deterministic text. Oxide recorded
+`Bf16PagedBatchDecode`, HND, and the 8-warp token-parallel algorithm. The raw
+records retain every request, wave, block median, provider counter, memory
+observation, and excluded claim. They are stored as gzip-compressed JSON and can
+be inspected with `gzip -cd FILE.json.gz | jq`:
+
+- 1.5B: [c1](./h20-serving-qwen2.5-1.5b-c1-ac2979e-20260813.json.gz),
+  [c4](./h20-serving-qwen2.5-1.5b-c4-ac2979e-20260813.json.gz),
+  [c8](./h20-serving-qwen2.5-1.5b-c8-ac2979e-20260813.json.gz), and
+  [c16](./h20-serving-qwen2.5-1.5b-c16-ac2979e-20260813.json.gz).
+- 7B: [c1](./h20-serving-qwen2.5-7b-c1-ac2979e-20260813.json.gz),
+  [c4](./h20-serving-qwen2.5-7b-c4-ac2979e-20260813.json.gz),
+  [c8](./h20-serving-qwen2.5-7b-c8-ac2979e-20260813.json.gz), and
+  [c16](./h20-serving-qwen2.5-7b-c16-ac2979e-20260813.json.gz).
+
+This is a fixed-concurrency wave comparison, not a saturation or production
+capacity claim. FlashInfer remains excluded for these model shapes because GQA
+group sizes 6 and 7 are outside the decode dispatch supported by this adapter.
 
 ## Historical H20 results
 
