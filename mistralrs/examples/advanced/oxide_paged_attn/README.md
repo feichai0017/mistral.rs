@@ -7,7 +7,7 @@ provider.
 ## Checkout
 
 The optional Cargo dependencies resolve Oxide Infer from the immutable Git
-commit `af4eae60f330f9b14123da6cc30a7dc0d1117f32`. A standalone Mistral.rs
+commit `d3f7e4e324f52e25994e68c2ed3361aa4058eba5`. A standalone Mistral.rs
 checkout can therefore build the `oxide-infer` feature without a sibling
 Oxide Infer checkout.
 
